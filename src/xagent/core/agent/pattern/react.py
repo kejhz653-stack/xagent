@@ -1652,17 +1652,18 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
             # Try to parse as JSON first
             try:
                 parsed = json.loads(response.strip())
-                if isinstance(parsed, dict):
-                    action = self._try_parse_action_from_dict(parsed, response.strip())
-                    if action:
-                        await log_llm_completion(
-                            parsed, action.type == "tool_call", action.reasoning
-                        )
-                        return action
-                    else:
-                        logger.warning(
-                            f"First call: Parsed JSON but unknown type: {parsed.get('type')}"
-                        )
+                parsed = self._select_first_phase_action_dict(parsed, response)
+                parsed = self._normalize_first_phase_action_dict(parsed)
+                action = self._try_parse_action_from_dict(parsed, response.strip())
+                if action:
+                    await log_llm_completion(
+                        parsed, action.type == "tool_call", action.reasoning
+                    )
+                    return action
+                self._raise_invalid_first_phase_action(
+                    parsed,
+                    f"Failed to parse ReAct action from JSON type: {parsed.get('type')}",
+                )
             except json.JSONDecodeError:
                 # JSON parsing failed - might be multiple JSON objects
                 # Try to use json_repair to handle multiple JSON objects
@@ -1674,44 +1675,13 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                     else:
                         action_data = repaired
 
-                    # Handle when json_repair returns a list (multiple JSON objects)
-                    # gpt-5.4 in streaming mode often returns multiple JSONs even with response_format='json_object'
-                    # We take the first one as the intended action
-                    if isinstance(action_data, list):
-                        # Log all items for debugging
-                        for i, item in enumerate(action_data):
-                            if isinstance(item, dict):
-                                logger.warning(
-                                    f"First call: JSON object {i}: type={item.get('type', 'UNKNOWN')}, keys={list(item.keys())}"
-                                )
-                            else:
-                                logger.warning(
-                                    f"First call: JSON object {i}: {type(item).__name__}"
-                                )
-
-                        # Take the first JSON object
-                        if action_data and isinstance(action_data[0], dict):
-                            action_data = action_data[0]
-                            logger.info(
-                                f"First call: Selected first JSON object from multiple (type: {action_data.get('type', 'UNKNOWN')})"
-                            )
-                        else:
-                            # First item is not a dict, raise error
-                            raise PatternExecutionError(
-                                pattern_name="ReAct",
-                                message=f"LLM returned multiple JSON objects but the first one is not a valid dict (count: {len(action_data)})",
-                                context={
-                                    "json_object_count": len(action_data),
-                                    "first_object_type": type(action_data[0]).__name__
-                                    if action_data
-                                    else "none",
-                                    "response_preview": response[:500]
-                                    if response
-                                    else None,
-                                },
-                            )
-
-                    if isinstance(action_data, dict):
+                    if isinstance(action_data, (dict, list)):
+                        action_data = self._select_first_phase_action_dict(
+                            action_data, response
+                        )
+                        action_data = self._normalize_first_phase_action_dict(
+                            action_data
+                        )
                         action = self._try_parse_action_from_dict(
                             action_data, response.strip()
                         )
@@ -1722,6 +1692,10 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                                 action.reasoning,
                             )
                             return action
+                        self._raise_invalid_first_phase_action(
+                            action_data,
+                            f"Failed to parse ReAct action from JSON type: {action_data.get('type')}",
+                        )
                 except Exception as repair_error:
                     # Re-raise PatternExecutionError as it's not a repair failure
                     if isinstance(repair_error, PatternExecutionError):
@@ -1927,6 +1901,93 @@ Remember: Return ONLY ONE JSON object. No additional text, no multiple objects.
                 message=f"Failed to invoke tool via native calling: {str(e)}",
                 context={"error": str(e), "chat_kwargs": chat_kwargs},
             )
+
+    def _select_first_phase_action_dict(self, action_data: Any, response: str) -> dict:
+        """Return the first action dict from first-phase parsed JSON."""
+        if isinstance(action_data, dict):
+            return action_data
+
+        if isinstance(action_data, list):
+            for i, item in enumerate(action_data):
+                if isinstance(item, dict):
+                    logger.info(
+                        f"First call: Selected JSON object {i} from list (type: {item.get('type', 'UNKNOWN')})"
+                    )
+                    return item
+
+                logger.warning(
+                    f"First call: Skipping non-dict JSON list item {i}: {type(item).__name__}"
+                )
+
+            raise PatternExecutionError(
+                pattern_name="ReAct",
+                message="No ReAct action object found in JSON array",
+                context={
+                    "json_object_count": len(action_data),
+                    "response_preview": response[:500] if response else None,
+                },
+            )
+
+        raise PatternExecutionError(
+            pattern_name="ReAct",
+            message=f"Expected ReAct action JSON object, got {type(action_data).__name__}",
+            context={"response_preview": response[:500] if response else None},
+        )
+
+    def _normalize_first_phase_action_dict(self, data: dict) -> dict:
+        """Normalize first-phase action JSON before parsing it as an Action.
+
+        The first ReAct LLM call should normally return ``type="tool_call"``
+        or ``type="final_answer"``. This also accepts the frontend
+        ``type="chat"`` payload emitted after ``ask_user_question`` and wraps
+        it as a final answer so the caller can extract ``chat_response``.
+
+        Some models put a concrete tool name, such as ``ask_user_question``,
+        in ``type`` instead of using ``tool_call``. Any other string type is
+        treated as that kind of tool-call decision; non-string or missing
+        action types are rejected so they trigger the ReAct retry path.
+        """
+        action_type = data.get("type")
+        if action_type in ("tool_call", "final_answer"):
+            return data
+
+        if action_type == "chat":
+            chat_response = data.get("chat")
+            if isinstance(chat_response, dict):
+                return {
+                    "type": "final_answer",
+                    "reasoning": "LLM provided a structured chat response",
+                    "answer": json.dumps(data, ensure_ascii=False),
+                    "success": True,
+                    "error": None,
+                }
+
+            self._raise_invalid_first_phase_action(
+                data,
+                "Invalid ReAct chat response: expected a 'chat' object",
+            )
+
+        if isinstance(action_type, str):
+            normalized = dict(data)
+            normalized["type"] = "tool_call"
+            return normalized
+
+        self._raise_invalid_first_phase_action(
+            data, f"Invalid ReAct action type: {action_type}"
+        )
+
+        # fix mypy false positive
+        return data
+
+    def _raise_invalid_first_phase_action(
+        self,
+        data: dict,
+        message: str,
+    ) -> None:
+        """Raise when parsed first-phase JSON is not a usable ReAct action."""
+        raise PatternExecutionError(
+            pattern_name="ReAct", message=message, context={"response": data}
+        )
 
     def _try_parse_action_from_dict(
         self, data: dict, answer_fallback: str = ""
