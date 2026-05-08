@@ -95,7 +95,7 @@ class TestInferEmbeddingConfigFromCollection:
     )
     def test_infer_no_tables_found(self, mock_conn):
         """Test inference when no embedding tables exist."""
-        mock_connection = MagicMock()
+        mock_connection = MagicMock(spec=["table_names", "open_table"])
         mock_conn.return_value = mock_connection
         mock_connection.table_names.return_value = []
 
@@ -108,7 +108,7 @@ class TestInferEmbeddingConfigFromCollection:
     )
     def test_infer_single_model(self, mock_conn):
         """Test inference with single embedding model."""
-        mock_connection = MagicMock()
+        mock_connection = MagicMock(spec=["table_names", "open_table"])
         mock_conn.return_value = mock_connection
         mock_connection.table_names.return_value = [
             "embeddings_OPENAI_text_embedding_ada_002"
@@ -138,7 +138,7 @@ class TestInferEmbeddingConfigFromCollection:
     )
     def test_infer_multiple_models_choose_most_used(self, mock_conn):
         """Test inference with multiple models chooses most used."""
-        mock_connection = MagicMock()
+        mock_connection = MagicMock(spec=["table_names", "open_table"])
         mock_conn.return_value = mock_connection
         mock_connection.table_names.return_value = [
             "embeddings_OPENAI_text_embedding_ada_002",

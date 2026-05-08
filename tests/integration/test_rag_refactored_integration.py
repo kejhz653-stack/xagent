@@ -24,6 +24,9 @@ from xagent.core.tools.core.RAG_tools.parse.parse_document import parse_document
 from xagent.core.tools.core.RAG_tools.storage.factory import (
     get_vector_store_raw_connection,
 )
+from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+    list_table_names,
+)
 from xagent.providers.vector_store.lancedb import (
     LanceDBVectorStore,
 )
@@ -233,7 +236,7 @@ class TestLanceDBProviderIntegration:
             assert table is not None
 
             # Verify table exists
-            table_names = conn.table_names()
+            table_names = list_table_names(conn)
             assert "test_table" in table_names
 
 

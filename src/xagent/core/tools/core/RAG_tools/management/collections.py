@@ -43,7 +43,7 @@ from ..management.status import (
     write_ingestion_status,
 )
 from ..storage.factory import get_metadata_store, get_vector_index_store
-from ..utils.lancedb_query_utils import _safe_count_rows
+from ..utils.lancedb_query_utils import _safe_count_rows, list_table_names
 from ..utils.string_utils import build_lancedb_filter_expression, escape_lancedb_string
 from ..utils.user_permissions import UserPermissions
 from ..utils.user_scope import resolve_user_scope
@@ -331,22 +331,26 @@ def _list_table_names(conn: DBConnection, warnings: List[str]) -> List[str]:
     )
 
     try:
-        table_names_fn = getattr(conn, "table_names")
-    except AttributeError as exc:
-        message = f"LanceDB connection missing table_names(): {exc}"
-        logger.warning(message)
-        warnings.append(message)
-        return []
-
-    try:
-        names = table_names_fn()
+        names = list_table_names(conn)
     except Exception as exc:  # noqa: BLE001 - convert to warning
         message = f"Failed to list LanceDB tables: {exc}"
         logger.warning(message)
         warnings.append(message)
         return []
 
-    return [str(name) for name in names]
+    if (
+        not names
+        and getattr(conn, "list_tables", None) is None
+        and getattr(conn, "table_names", None) is None
+    ):
+        message = (
+            "LanceDB connection cannot list tables (missing list_tables/table_names)"
+        )
+        logger.warning(message)
+        warnings.append(message)
+        return []
+
+    return names
 
 
 def _collect_doc_counts_for_collection(

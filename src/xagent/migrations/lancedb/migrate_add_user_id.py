@@ -22,6 +22,10 @@ import pyarrow.parquet as pq
 from lancedb import connect
 from lancedb.db import DBConnection
 
+from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+    list_table_names,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +44,7 @@ def get_lancedb_path() -> str:
 def get_embeddings_tables(conn: DBConnection) -> list[str]:
     """Get list of embeddings tables (pattern: embeddings_*)"""
     try:
-        existing_tables = conn.table_names()
+        existing_tables = list_table_names(conn)
         embeddings_tables = [t for t in existing_tables if t.startswith("embeddings_")]
         return embeddings_tables
     except Exception as e:
@@ -204,7 +208,7 @@ def main():
 
     # List existing tables
     try:
-        existing_tables = conn.table_names()
+        existing_tables = list_table_names(conn)
         logger.info(f"\nExisting tables: {existing_tables}")
     except Exception as e:
         logger.error(f"✗ Could not list tables: {e}")

@@ -73,7 +73,7 @@ def test_cleanup_document_preview_then_confirm(mock_get_conn: MagicMock) -> None
     2. Confirm mode actually executes deletions and returns final counts
     3. Both modes follow the correct deletion order: embeddings -> chunks -> parses -> main_pointers -> documents
     """
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = [
         "documents",
         "parses",
@@ -124,7 +124,7 @@ def test_cleanup_document_preview_then_confirm(mock_get_conn: MagicMock) -> None
 )
 def test_cleanup_parse_preview(mock_get_conn: MagicMock) -> None:
     """Preview counts for parse scope (embeddings, chunks, parses)."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["chunks", "embeddings_m1", "parses"]
     table = _create_mock_table_with_schema()
     # parse preview: __embeddings__, chunks, parses
@@ -143,7 +143,7 @@ def test_cleanup_parse_preview(mock_get_conn: MagicMock) -> None:
 )
 def test_cleanup_chunk_preview(mock_get_conn: MagicMock) -> None:
     """Preview counts for chunk scope (embeddings, chunks)."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["chunks", "embeddings_m1", "parses"]
     table = _create_mock_table_with_schema()
     # chunk preview: __embeddings__, chunks
@@ -169,7 +169,7 @@ def test_cleanup_embed(mock_get_conn: MagicMock) -> None:
     3. Cleanup is scoped to the specified model_tag only
     4. Handles cases where no embeddings exist (returns 0 count)
     """
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["embeddings_m1"]
     table = _create_mock_table_with_schema()
     table.count_rows.return_value = 1
@@ -189,7 +189,7 @@ def test_cleanup_handles_missing_tables(mock_get_conn: MagicMock) -> None:
     Verifies that cleanup functions do not raise when tables are missing and
     return zero counts accordingly.
     """
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     # Simulate no tables present in the database
     conn.table_names.return_value = []
     table = _create_mock_table_with_schema()
@@ -240,7 +240,7 @@ def test_cleanup_embed_with_multiple_models(mock_get_conn: MagicMock) -> None:
     This regression test ensures that calling cleanup_embed_cascade with a specific
     model_tag does not inadvertently delete data from other embeddings tables.
     """
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     # Two embeddings tables exist
     conn.table_names.return_value = ["embeddings_bge_large", "embeddings_minilm"]
 
@@ -302,7 +302,7 @@ def test_cleanup_embed_without_model_tag_affects_all_tables(
     When model_tag is None, all embeddings tables should be affected.
     This is the expected behavior for full document cleanup.
     """
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["embeddings_bge_large", "embeddings_minilm"]
 
     queried_tables = []
@@ -342,7 +342,7 @@ def test_cleanup_document_injection_attack_prevention(mock_get_conn: MagicMock) 
     malicious_doc_id = "test_doc' OR 1=1 --"
     malicious_collection = "test_coll'; DROP TABLE documents; --"
 
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents", "parses", "chunks", "embeddings_m1"]
 
     # Mock table that records the filter expression used
@@ -391,7 +391,7 @@ def test_cleanup_parse_injection_attack_prevention(mock_get_conn: MagicMock) -> 
     collection = "test_collection"
     doc_id = "test_doc"
 
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["parses", "chunks", "embeddings_m1"]
 
     # Mock table that records the filter expression used
@@ -453,7 +453,7 @@ def test_cleanup_document_preview_respects_model_tag(mock_get_conn: MagicMock) -
     doc_id = "test_doc"
     target_model_tag = "model_a"
 
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     # Setup: Two embeddings tables with different models
     conn.table_names.return_value = [
         "documents",
@@ -508,7 +508,7 @@ def test_cascade_delete_collection_with_user_id_column_applies_user_filter(
     mock_get_conn: MagicMock,
 ) -> None:
     """Non-admin collection delete should include user_id when table has the column."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
     conn.open_table.return_value = table
@@ -536,7 +536,7 @@ def test_cascade_delete_document_with_user_id_column_applies_user_filter(
     mock_get_conn: MagicMock,
 ) -> None:
     """Non-admin document delete should include user_id when table has the column."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
     conn.open_table.return_value = table
@@ -566,7 +566,7 @@ def test_cascade_delete_collection_without_user_id_column_compatible(
     mock_get_conn: MagicMock,
 ) -> None:
     """Non-admin collection delete should not inject user_id for legacy schemas."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     table = _create_mock_table_with_columns(["collection", "doc_id"])
     conn.open_table.return_value = table
@@ -593,7 +593,7 @@ def test_cascade_delete_document_without_user_id_column_compatible(
     mock_get_conn: MagicMock,
 ) -> None:
     """Non-admin document delete should stay compatible for legacy schemas."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     table = _create_mock_table_with_columns(["collection", "doc_id"])
     conn.open_table.return_value = table
@@ -622,7 +622,7 @@ def test_cascade_delete_admin_vs_non_admin_user_filter_behavior(
     mock_get_conn: MagicMock,
 ) -> None:
     """Admin should not be filtered by user_id; non-admin should be filtered."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
     conn.open_table.return_value = table
@@ -664,7 +664,7 @@ def test_cascade_delete_collection_open_table_error_uses_tenant_safe_fallback(
     mock_get_conn: MagicMock,
 ) -> None:
     """When table introspection fails, collection delete should keep tenant scoping."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     conn.open_table.side_effect = RuntimeError("table unavailable")
     mock_get_conn.return_value = conn
@@ -696,7 +696,7 @@ def test_cascade_delete_document_open_table_error_uses_tenant_safe_fallback(
     mock_get_conn: MagicMock,
 ) -> None:
     """When table introspection fails, document delete should keep tenant scoping."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     conn.open_table.side_effect = RuntimeError("table unavailable")
     mock_get_conn.return_value = conn
@@ -730,7 +730,7 @@ def test_cascade_delete_collection_open_table_error_without_user_id_denied(
     mock_get_conn: MagicMock,
 ) -> None:
     """Unauthenticated non-admin fallback should deny access on introspection error."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     conn.open_table.side_effect = RuntimeError("table unavailable")
     mock_get_conn.return_value = conn
@@ -762,7 +762,7 @@ def test_cascade_delete_document_open_table_error_without_user_id_denied(
     mock_get_conn: MagicMock,
 ) -> None:
     """Unauthenticated non-admin document fallback should deny access."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     conn.open_table.side_effect = RuntimeError("table unavailable")
     mock_get_conn.return_value = conn
@@ -796,7 +796,7 @@ def test_cascade_delete_document_schema_probe_error_keeps_legacy_compatible_filt
     mock_get_conn: MagicMock,
 ) -> None:
     """If schema.names probing fails, document delete should stay legacy-compatible."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     table = MagicMock()
     schema = MagicMock()
@@ -836,7 +836,7 @@ def test_cascade_delete_document_multitable_predicates_are_consistent(
     mock_get_conn: MagicMock,
 ) -> None:
     """Document delete should build consistent predicates across all target tables."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = [
         "documents",
         "parses",
@@ -908,7 +908,7 @@ def test_cascade_delete_document_model_tag_only_builds_target_embeddings_predica
     mock_get_conn: MagicMock,
 ) -> None:
     """Document cascade with model_tag should only target the specified embeddings table."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["embeddings_m1", "embeddings_m2"]
 
     queried_tables: list[str] = []
@@ -954,7 +954,7 @@ def test_cascade_delete_document_model_tag_probe_error_without_user_id_denied(
     mock_get_conn: MagicMock,
 ) -> None:
     """If target embeddings table probing fails, unauthenticated fallback must deny access."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["embeddings_m1", "embeddings_m2"]
 
     queried_tables: list[str] = []
@@ -1000,7 +1000,7 @@ def test_cascade_delete_confirm_delete_error_propagates(
     mock_get_conn: MagicMock,
 ) -> None:
     """Confirm mode should fail fast when table.delete raises an exception."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
     table.count_rows.return_value = 1
@@ -1027,7 +1027,7 @@ def test_cascade_delete_uses_context_when_user_id_not_passed(
     mock_get_conn: MagicMock,
 ) -> None:
     """Non-admin cascade delete should use user scope context when user_id omitted."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = ["documents"]
     table = _create_mock_table_with_columns(["collection", "doc_id", "user_id"])
     conn.open_table.return_value = table
@@ -1055,7 +1055,7 @@ def test_cascade_delete_preview_and_confirm_counts_match_for_model_tag(
     mock_get_conn: MagicMock,
 ) -> None:
     """Preview counts should match confirm counts in fixed-count model_tag scenario."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = [
         "documents",
         "parses",
@@ -1127,7 +1127,7 @@ def test_cascade_delete_confirm_deletion_order_is_stable(
     mock_get_conn: MagicMock,
 ) -> None:
     """Confirm mode should delete tables in dependency-safe fixed order."""
-    conn = MagicMock()
+    conn = MagicMock(spec=["table_names", "open_table"])
     conn.table_names.return_value = [
         "documents",
         "parses",

@@ -40,6 +40,7 @@ from ..core.schemas import (
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..LanceDB.schema_manager import _safe_close_table, ensure_embeddings_table
 from ..storage.factory import get_vector_index_store
+from ..utils.lancedb_query_utils import list_table_names
 from ..utils.metadata_utils import deserialize_metadata, serialize_metadata
 
 logger = logging.getLogger(__name__)
@@ -418,9 +419,7 @@ def _validate_and_prepare_table(
     """
     conn_any = cast(Any, conn)
     try:
-        existing_tables: List[str] = []
-        if hasattr(conn_any, "table_names"):
-            existing_tables = list(conn_any.table_names())
+        existing_tables: List[str] = list_table_names(conn_any)
         if table_name in existing_tables:
             existing_table = conn.open_table(table_name)
             try:

@@ -13,7 +13,7 @@ from ..core.exceptions import DatabaseOperationError, VersionManagementError
 from ..core.schemas import StepType
 from ..LanceDB.schema_manager import _safe_close_table
 from ..storage.factory import get_vector_store_raw_connection
-from ..utils.lancedb_query_utils import query_to_list
+from ..utils.lancedb_query_utils import list_table_names, query_to_list
 from ..utils.string_utils import build_lancedb_filter_expression
 
 
@@ -66,7 +66,7 @@ def _query_table(
     Returns:
         List of dictionaries representing query results. Empty list if table doesn't exist or no results.
     """
-    if table_name not in connection.table_names():
+    if table_name not in list_table_names(connection):
         return []
     table = None
     try:
@@ -227,7 +227,7 @@ def _get_embed_candidates(
     Returns:
         List of embedding candidate dictionaries
     """
-    table_names = connection.table_names()
+    table_names = list_table_names(connection)
     embed_tables = [name for name in table_names if name.startswith("embeddings_")]
     if not embed_tables:
         return []

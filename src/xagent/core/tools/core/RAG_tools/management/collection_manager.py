@@ -19,6 +19,7 @@ from ..core.schemas import CollectionInfo
 from ..LanceDB.schema_manager import _safe_close_table
 from ..storage.contracts import MetadataStore
 from ..storage.factory import get_metadata_store, get_vector_index_store
+from ..utils.lancedb_query_utils import list_table_names
 from ..utils.model_resolver import resolve_embedding_adapter
 from ..utils.tag_mapping import register_tag_mapping
 
@@ -302,15 +303,13 @@ class CollectionManager:
             ]
         )
 
-        # Check if table already exists
-        table_names_fn = getattr(conn, "table_names", None)
+        # Check if table already exists (prefer list_tables(); avoids deprecation warnings)
         table_exists = False
-        if table_names_fn:
-            try:
-                existing_tables = table_names_fn()
-                table_exists = "collection_metadata" in existing_tables
-            except Exception as e:
-                logger.debug("Table names check failed: %s", e)
+        try:
+            existing_tables = list_table_names(conn)
+            table_exists = "collection_metadata" in existing_tables
+        except Exception as e:
+            logger.debug("Table names check failed: %s", e)
 
         if not table_exists:
             try:

@@ -14,6 +14,9 @@ from xagent.core.tools.core.RAG_tools.storage.factory import (
     get_vector_index_store,
     reset_rag_storage_for_tests,
 )
+from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+    list_table_names,
+)
 
 
 def test_forward_migrate_legacy_embeddings_table_to_hub_id(
@@ -63,7 +66,7 @@ def test_forward_migrate_legacy_embeddings_table_to_hub_id(
 
     primary_table_name = f"embeddings_{to_model_tag(hub_id)}"
     # Sanity: primary should not exist yet
-    assert primary_table_name not in set(conn.table_names())  # type: ignore[attr-defined]
+    assert primary_table_name not in set(list_table_names(conn))
 
     # Patch resolver so hub_id -> model_name mapping is available for migration.
     cfg = EmbeddingModelConfig(
@@ -90,7 +93,7 @@ def test_forward_migrate_legacy_embeddings_table_to_hub_id(
         assert result["rows_migrated"] == 1
 
     # Verify primary table was created
-    assert primary_table_name in set(conn.table_names())  # type: ignore[attr-defined]
+    assert primary_table_name in set(list_table_names(conn))
     primary_table = conn.open_table(primary_table_name)
     rows = primary_table.search().to_pandas()
     assert len(rows) == 1

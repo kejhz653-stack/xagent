@@ -14,6 +14,9 @@ from unittest.mock import patch
 
 import pytest
 
+from xagent.core.tools.core.RAG_tools.utils.lancedb_query_utils import (
+    list_table_names,
+)
 from xagent.providers.vector_store.lancedb import (
     LanceDBConnectionManager,
     LanceDBVectorStore,
@@ -196,7 +199,7 @@ class TestLanceDBVectorStore:
         assert conn is not None
 
         # Should be able to use connection for advanced operations
-        tables = conn.table_names()
+        tables = list_table_names(conn)
         assert "test_vectors" in tables
 
 

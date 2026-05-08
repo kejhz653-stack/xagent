@@ -214,7 +214,7 @@ class TestValidateAndPrepareTable:
         """Test table exists with same vector dimension is not dropped."""
         from unittest.mock import MagicMock, patch
 
-        conn = MagicMock()
+        conn = MagicMock(spec=["table_names", "open_table", "drop_table"])
         table_name = "embeddings_test_tag"
         conn.table_names.return_value = [table_name]
         existing_table = MagicMock()
@@ -224,7 +224,6 @@ class TestValidateAndPrepareTable:
         mock_schema.field.return_value = mock_vector_field
         existing_table.schema = mock_schema
         conn.open_table.return_value = existing_table
-        conn.drop_table = MagicMock()
 
         with patch(
             "xagent.core.tools.core.RAG_tools.vector_storage.vector_manager.ensure_embeddings_table"
@@ -243,7 +242,7 @@ class TestValidateAndPrepareTable:
         """Test table with vector field without list_size is dropped and recreated."""
         from unittest.mock import MagicMock, patch
 
-        conn = MagicMock()
+        conn = MagicMock(spec=["table_names", "open_table", "drop_table"])
         table_name = "embeddings_test_tag"
         conn.table_names.return_value = [table_name]
         existing_table = MagicMock()
@@ -255,7 +254,6 @@ class TestValidateAndPrepareTable:
         mock_schema.field.return_value = mock_vector_field
         existing_table.schema = mock_schema
         conn.open_table.return_value = existing_table
-        conn.drop_table = MagicMock()
         new_table = MagicMock()
         conn.open_table.side_effect = [existing_table, new_table]
 
@@ -274,10 +272,9 @@ class TestValidateAndPrepareTable:
         """Test when schema check raises, drop is attempted and table is recreated."""
         from unittest.mock import MagicMock, patch
 
-        conn = MagicMock()
+        conn = MagicMock(spec=["table_names", "open_table", "drop_table"])
         table_name = "embeddings_test_tag"
         conn.table_names.return_value = [table_name]
-        conn.drop_table = MagicMock()
         new_table = MagicMock()
         # First open_table (in try) raises; after ensure_embeddings_table, second open_table returns new_table
         conn.open_table.side_effect = [RuntimeError("schema error"), new_table]
@@ -738,7 +735,9 @@ class TestWriteVectorsToDb:
 
         from xagent.core.tools.core.RAG_tools.core.schemas import ChunkEmbeddingData
 
-        mock_db_connection = MagicMock()
+        mock_db_connection = MagicMock(
+            spec=["table_names", "open_table", "create_table"]
+        )
         mock_embeddings_table = _create_mock_table_with_schema()
 
         def mock_open_table_func(table_name):

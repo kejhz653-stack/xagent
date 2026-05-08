@@ -13,8 +13,7 @@ if TYPE_CHECKING:
 
 from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError as SAOperationalError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 from xagent.core.model.chat.basic.adapter import create_base_llm
 from xagent.core.model.chat.basic.base import BaseLLM

@@ -11,6 +11,7 @@ import pyarrow as pa  # type: ignore
 from ..LanceDB.model_tag_utils import to_model_tag
 from ..LanceDB.schema_manager import _safe_close_table
 from ..storage.factory import get_vector_store_raw_connection
+from .lancedb_query_utils import list_table_names
 from .string_utils import escape_lancedb_string
 from .tag_mapping import register_tag_mapping
 
@@ -154,21 +155,19 @@ def _infer_embedding_config_from_collection(
         logger.debug("Connecting to LanceDB for collection '%s'", collection_name)
         conn = get_vector_store_raw_connection()
 
-        # Get all table names that contain embeddings
-        table_names_fn = getattr(conn, "table_names", None)
-        if table_names_fn is None:
+        # Get all table names that contain embeddings (prefer list_tables(); avoids LanceDB deprecation warnings)
+        if (
+            getattr(conn, "list_tables", None) is None
+            and getattr(conn, "table_names", None) is None
+        ):
             logger.info(
-                "LanceDB connection missing table_names() for collection '%s' - will use lazy initialization",
+                "LanceDB connection missing list_tables/table_names for collection '%s' - "
+                "will use lazy initialization",
                 collection_name,
             )
             return None, None
-        all_table_names = table_names_fn()
-        if all_table_names is None:
-            logger.info(
-                "No table names returned for collection '%s' - will use lazy initialization",
-                collection_name,
-            )
-            return None, None
+
+        all_table_names = list_table_names(conn)
         table_names = [
             name for name in all_table_names if name.startswith("embeddings_")
         ]
@@ -634,15 +633,16 @@ def _table_exists(conn: Any, table_name: str) -> bool:
     """Check if a table exists in the database."""
     table = None
     try:
-        # Try to get table schema
-        table_names_fn = getattr(conn, "table_names", None)
-        if table_names_fn is not None:
-            table_names = table_names_fn()
-            return table_name in table_names
-        else:
-            # Fallback: try to open the table
+        names = list_table_names(conn)
+        if names:
+            return table_name in names
+        if (
+            getattr(conn, "list_tables", None) is None
+            and getattr(conn, "table_names", None) is None
+        ):
             table = conn.open_table(table_name)
             return True
+        return False
     except Exception:
         return False
     finally:

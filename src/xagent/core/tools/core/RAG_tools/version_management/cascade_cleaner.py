@@ -21,7 +21,7 @@ from ..LanceDB.schema_manager import (
     ensure_parses_table,
 )
 from ..storage.factory import get_vector_store_raw_connection
-from ..utils.lancedb_query_utils import _safe_count_rows
+from ..utils.lancedb_query_utils import _safe_count_rows, list_table_names
 from ..utils.string_utils import (
     build_lancedb_filter_expression,
     build_user_id_filter_for_table,
@@ -168,16 +168,10 @@ def _append_user_filter_for_embeddings_if_needed(
 
 def _get_table_names(conn: Any) -> list[str]:
     """Get table names from LanceDB connection with mypy-safe access."""
-    table_names_fn = getattr(conn, "table_names", None)
-    if table_names_fn is None:
-        return []
     try:
-        names = table_names_fn()
+        return list_table_names(conn)
     except Exception:
         return []
-    if not names:
-        return []
-    return [str(name) for name in names]
 
 
 def _plan_by_predicates(

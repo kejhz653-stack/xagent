@@ -54,7 +54,7 @@ class TestListCandidates:
 
     def test_invalid_step_type(self):
         """Test that function raises error for invalid step_type."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
 
         # Import the actual module to patch using importlib
         import importlib
@@ -76,7 +76,7 @@ class TestListCandidates:
 
     def test_parse_candidates_empty(self):
         """Test list_candidates returns empty list when no parse candidates exist."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = []
 
         # Import the actual module to patch using importlib
@@ -100,7 +100,7 @@ class TestListCandidates:
 
     def test_parse_candidates_with_data(self):
         """Test list_candidates returns parse candidates when data exists."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = ["parses"]
         mock_table = MagicMock()
 
@@ -160,7 +160,7 @@ class TestListCandidates:
 
     def test_chunk_candidates_with_data(self):
         """Test list_candidates returns chunk candidates when data exists."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = ["chunks"]
         mock_table = MagicMock()
 
@@ -227,7 +227,7 @@ class TestListCandidates:
 
     def test_embed_candidates_with_data(self):
         """Test list_candidates returns embed candidates when data exists."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = [
             "embeddings_bge_large",
         ]
@@ -295,7 +295,7 @@ class TestListCandidates:
 
     def test_state_filter(self):
         """Test that state filter works correctly."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = ["parses"]
         mock_table = MagicMock()
 
@@ -331,7 +331,7 @@ class TestListCandidates:
 
     def test_limit_filter(self):
         """Test that limit filter works correctly."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = ["parses"]
         mock_table = MagicMock()
 
@@ -368,7 +368,7 @@ class TestListCandidates:
 
     def test_model_tag_filter_for_embeddings(self):
         """Test that model_tag filter works for embed step_type."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = [
             "embeddings_bge_large",
             "embeddings_minilm",
@@ -407,7 +407,7 @@ class TestListCandidates:
 
     def test_sort_before_limit(self):
         """Test that sorting happens before limit to get correct top-N results."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = ["parses"]
         mock_table = MagicMock()
 
@@ -494,7 +494,7 @@ class TestListCandidates:
 
     def test_sql_injection_protection(self):
         """Test that list_candidates protects against SQL injection."""
-        mock_conn = MagicMock()
+        mock_conn = MagicMock(spec=["table_names", "open_table"])
         mock_conn.table_names.return_value = ["parses"]
         mock_table = MagicMock()
 

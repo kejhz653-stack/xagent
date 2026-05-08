@@ -203,13 +203,29 @@ class ProgressManager:
                 if self.broadcaster:
                     try:
                         loop = asyncio.get_running_loop()
-                        loop.create_task(self.broadcaster.broadcast_progress(task))
+                        self._main_loop = loop
+                        if not loop.is_closed():
+                            coro = self.broadcaster.broadcast_progress(task)
+                            try:
+                                loop.create_task(coro)
+                            except Exception:
+                                coro.close()
+                                raise
                     except RuntimeError:
-                        if self._main_loop:
-                            asyncio.run_coroutine_threadsafe(
-                                self.broadcaster.broadcast_progress(task),
-                                self._main_loop,
-                            )
+                        if (
+                            self._main_loop
+                            and self._main_loop.is_running()
+                            and not self._main_loop.is_closed()
+                        ):
+                            coro = self.broadcaster.broadcast_progress(task)
+                            try:
+                                asyncio.run_coroutine_threadsafe(
+                                    coro,
+                                    self._main_loop,
+                                )
+                            except Exception:
+                                coro.close()
+                                raise
             except Exception as e:
                 # For updates, we log as error but don't crash the pipeline
                 logger.error("Failed to persist/broadcast task update: %s", e)
