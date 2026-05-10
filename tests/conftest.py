@@ -21,8 +21,8 @@ from openai.types.chat.chat_completion_message_tool_call import (
 )
 
 from xagent.core.model import ChatModelConfig, EmbeddingModelConfig, RerankModelConfig
-from xagent.core.observability.langfuse_tracer import init_tracer, reset_tracer
 from xagent.core.tools.core.RAG_tools.storage import reset_rag_storage_for_tests
+from xagent.core.tracing.langfuse import reset_langfuse_client
 
 # YAML entrypoint has been removed, commenting out these imports
 # from xagent.entrypoint.yaml.parser import MigrationManager
@@ -502,23 +502,11 @@ def sample_openai_model():
 
 
 @pytest.fixture
-def langfuse_tracer_reset():
-    """Fixture to reset Langfuse tracer before and after each test."""
-    reset_tracer()
+def langfuse_client_reset():
+    """Fixture to reset the shared Langfuse client before and after each test."""
+    reset_langfuse_client()
     yield
-    reset_tracer()
-
-
-@pytest.fixture
-def disabled_langfuse_config(temp_dir):
-    """Fixture providing temporary directory with disabled Langfuse config."""
-    config_data = {"enabled": False}
-    config_path = f"{temp_dir}/langfuse_config.json"
-    with open(config_path, "w") as f:
-        json.dump(config_data, f)
-
-    init_tracer(temp_dir)
-    yield temp_dir, config_path
+    reset_langfuse_client()
 
 
 @pytest.fixture
@@ -652,16 +640,18 @@ def check_langfuse_env():
     """Check required Langfuse environment variables - used by integration tests."""
     public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
     secret_key = os.getenv("LANGFUSE_SECRET_KEY")
-    host = os.getenv("LANGFUSE_HOST")
+    base_url = os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST")
 
     if not public_key:
         pytest.fail("LANGFUSE_PUBLIC_KEY environment variable is required")
     if not secret_key:
         pytest.fail("LANGFUSE_SECRET_KEY environment variable is required")
-    if not host:
-        pytest.fail("LANGFUSE_HOST environment variable is required")
+    if not base_url:
+        pytest.fail(
+            "LANGFUSE_BASE_URL or LANGFUSE_HOST environment variable is required"
+        )
 
-    return public_key, secret_key, host
+    return public_key, secret_key, base_url
 
 
 @pytest.fixture
