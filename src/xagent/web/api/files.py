@@ -12,6 +12,10 @@ from sqlalchemy.orm import Session
 
 from ...config import get_uploads_dir
 from ...core.tools.adapters.vibe.file_tool import read_file
+from ...core.tools.core.file_analysis import (
+    collect_pptx_slide_blocks,
+    iter_pptx_shapes,
+)
 from ..auth_dependencies import get_current_user
 from ..config import (
     BINARY_EXTENSIONS,
@@ -404,6 +408,25 @@ async def _try_convert_pptx_to_pdf(path: Path) -> Optional[StreamingResponse]:
         return None
 
 
+def _pptx_text_preview(path: Path) -> str:
+    """Extract a plain-text preview from a .pptx file for upload responses.
+
+    Concatenates each slide's shape text and speaker notes. Returns an empty
+    string if python-pptx is not installed, the file is not .pptx, or
+    extraction fails.
+    """
+    if not pptx or path.suffix.lower() != ".pptx":
+        return ""
+    try:
+        prs = pptx.Presentation(str(path))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to open pptx for preview: %s", exc)
+        return ""
+
+    blocks, _stats = collect_pptx_slide_blocks(prs)
+    return "\n\n".join(blocks)
+
+
 def _pptx_fallback_html(path: Path) -> HTMLResponse:
     if not pptx:
         raise pptx_not_installed_exception
@@ -421,23 +444,41 @@ def _pptx_fallback_html(path: Path) -> HTMLResponse:
             .slide { border: 1px solid #ddd; padding: 20px; margin: 20px 0; background: #f9f9f9; border-radius: 8px; }
             .slide-number { color: #999; font-size: 12px; margin-top: 10px; }
             .text-content { white-space: pre-wrap; }
+            .notes { color: #666; font-style: italic; margin-top: 10px; }
         </style>
     </head>
     <body>
     """
     html_content += f"<h1>📊 {path.name}</h1>"
+    total_slides = len(prs.slides)
     for slide_num, slide in enumerate(prs.slides, 1):
-        slide_text = []
-        for shape in slide.shapes:
+        slide_text: list[str] = []
+        for shape in iter_pptx_shapes(slide.shapes):
             shape_text = getattr(shape, "text", None)
             if shape_text:
-                slide_text.append(str(shape_text))
-        if slide_text:
+                txt = str(shape_text).strip()
+                if txt:
+                    slide_text.append(txt)
+            elif getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        cell_text = cell.text_frame.text.strip()
+                        if cell_text:
+                            slide_text.append(cell_text)
+        notes_html = ""
+        if getattr(slide, "has_notes_slide", False):
+            notes_frame = getattr(slide.notes_slide, "notes_text_frame", None)
+            notes = getattr(notes_frame, "text", "").strip() if notes_frame else ""
+            if notes:
+                notes_html = f'<div class="notes">[Notes] {notes}</div>'
+        if slide_text or notes_html:
+            body_html = "<br>".join(slide_text)
             html_content += f"""
             <div class=\"slide\">
                 <h2>Slide {slide_num}</h2>
-                <div class=\"text-content\">{"<br>".join(slide_text)}</div>
-                <div class=\"slide-number\">Slide {slide_num} of {len(prs.slides)}</div>
+                <div class=\"text-content\">{body_html}</div>
+                {notes_html}
+                <div class=\"slide-number\">Slide {slide_num} of {total_slides}</div>
             </div>
             """
     html_content += "</body></html>"
@@ -510,7 +551,23 @@ async def upload_file(
             content_preview = ""
             # Skip preview generation for binary files (images, videos, etc.)
             file_extension = Path(uploaded.filename).suffix.lower()
-            if file_extension not in BINARY_EXTENSIONS:
+            if file_extension == ".pptx":
+                try:
+                    preview_content = await asyncio.to_thread(
+                        _pptx_text_preview, target_path
+                    )
+                    content_preview = (
+                        preview_content[:500] + "..."
+                        if len(preview_content) > 500
+                        else preview_content
+                    )
+                except Exception:
+                    content_preview = ""
+            elif file_extension == ".ppt":
+                # python-pptx does not support the legacy .ppt format; skip
+                # the thread dispatch and return an empty preview directly.
+                content_preview = ""
+            elif file_extension not in BINARY_EXTENSIONS:
                 try:
                     preview_content = read_file(str(target_path))
                     content_preview = (

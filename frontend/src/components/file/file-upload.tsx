@@ -76,7 +76,7 @@ export function FileUpload({ onFilesChange, files }: FileUploadProps) {
           multiple
           onChange={handleFileSelect}
           className="hidden"
-          accept=".pdf,.doc,.docx,.txt,.md,.csv,.json,.xlsx,.xls"
+          accept=".pdf,.doc,.docx,.txt,.md,.csv,.json,.xlsx,.xls,.ppt,.pptx"
         />
         <Upload
           className={cn(

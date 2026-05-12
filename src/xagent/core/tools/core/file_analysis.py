@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 from pydantic import BaseModel
 
@@ -58,6 +58,8 @@ def analyze_uploaded_file(
         return _analyze_python_file(file_path, filename, file_size)
     elif file_ext == ".md":
         return _analyze_markdown_file(file_path, filename, file_size)
+    elif file_ext in (".pptx", ".ppt"):
+        return _analyze_pptx_file(file_path, filename, file_size, file_ext)
     else:
         return _analyze_generic_file(file_path, filename, file_size, file_ext)
 
@@ -326,6 +328,188 @@ def _analyze_markdown_file(
 
     except Exception as e:
         raise ValueError(f"Failed to analyze Markdown file: {e}")
+
+
+def iter_pptx_shapes(shapes: Any) -> Iterator[Any]:
+    """Yield individual shapes, recursing into ``GroupShape`` containers.
+
+    Top-level iteration over ``slide.shapes`` misses content nested inside
+    grouped shapes (a common PowerPoint pattern). This generator descends into
+    any group it encounters so callers see a flat stream of leaf shapes.
+    """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    for shape in shapes:
+        if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.GROUP:
+            yield from iter_pptx_shapes(shape.shapes)
+        else:
+            yield shape
+
+
+def collect_pptx_slide_blocks(prs: Any) -> Tuple[List[str], Dict[str, int]]:
+    """Walk a python-pptx ``Presentation`` and return per-slide text blocks.
+
+    Returns:
+        A pair ``(blocks, stats)`` where ``blocks`` is a list of formatted
+        per-slide strings (e.g. ``"Slide 1:\nTitle\n..."``). Slides with no
+        text / notes / table content are omitted. ``stats`` is a dict with
+        ``total_shapes``, ``total_chars``, ``notes_count``, ``image_count``.
+
+    Callers are expected to have verified that ``python-pptx`` is importable
+    before passing a Presentation in.
+    """
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    blocks: list[str] = []
+    total_shapes = 0
+    total_chars = 0
+    notes_count = 0
+    image_count = 0
+
+    for slide_num, slide in enumerate(prs.slides, 1):
+        slide_lines: list[str] = []
+        for shape in iter_pptx_shapes(slide.shapes):
+            total_shapes += 1
+            if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE:
+                image_count += 1
+            shape_text = getattr(shape, "text", None)
+            if shape_text:
+                txt = str(shape_text).strip()
+                if txt:
+                    slide_lines.append(txt)
+                    total_chars += len(txt)
+            elif getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        txt = cell.text_frame.text.strip()
+                        if txt:
+                            slide_lines.append(txt)
+                            total_chars += len(txt)
+        # ``slide.notes_slide`` creates a notes slide on access; guard with
+        # ``has_notes_slide`` so this analyzer stays read-only.
+        notes = ""
+        if getattr(slide, "has_notes_slide", False):
+            notes_frame = getattr(slide.notes_slide, "notes_text_frame", None)
+            notes = getattr(notes_frame, "text", "").strip() if notes_frame else ""
+        if notes:
+            notes_count += 1
+            slide_lines.append(f"[Notes] {notes}")
+            total_chars += len(notes)
+        if slide_lines:
+            blocks.append(f"Slide {slide_num}:\n" + "\n".join(slide_lines))
+
+    stats = {
+        "total_shapes": total_shapes,
+        "total_chars": total_chars,
+        "notes_count": notes_count,
+        "image_count": image_count,
+    }
+    return blocks, stats
+
+
+def _analyze_pptx_file(
+    file_path: Path, filename: str, file_size: int, file_ext: str
+) -> FileAnalysisResult:
+    """Analyze a PowerPoint presentation (.pptx / .ppt) file.
+
+    Uses python-pptx to extract slide titles, body text and speaker notes so the
+    agent receives a usable text representation instead of binary blob bytes.
+    Legacy ``.ppt`` (binary) files are not supported by python-pptx; they fall
+    back to the generic analyzer with a hint to convert.
+    """
+    if file_ext == ".ppt":
+        # python-pptx only supports the OOXML .pptx format. Return a binary
+        # fallback directly instead of letting _analyze_generic_file attempt a
+        # UTF-8 read on the binary CFB stream.
+        return FileAnalysisResult(
+            filename=filename,
+            file_type=file_ext,
+            size=file_size,
+            content_preview="[Binary or non-text file]",
+            structure_summary=(
+                f"Legacy PowerPoint file ({file_ext}) with {file_size} bytes"
+            ),
+            key_insights=[
+                "Legacy .ppt format detected; convert to .pptx for full text extraction.",
+                "File appears to be binary or encoded",
+            ],
+            suggested_actions=[
+                "Use appropriate binary file tools",
+                "Convert to .pptx format",
+            ],
+        )
+
+    try:
+        from pptx import Presentation
+    except ImportError:
+        result = _analyze_generic_file(file_path, filename, file_size, file_ext)
+        result.key_insights.insert(
+            0,
+            "python-pptx not installed; install xagent[document-processing] to parse .pptx.",
+        )
+        return result
+
+    try:
+        prs = Presentation(str(file_path))
+    except Exception as exc:  # noqa: BLE001
+        return FileAnalysisResult(
+            filename=filename,
+            file_type=file_ext,
+            size=file_size,
+            content_preview="[Failed to open presentation]",
+            structure_summary=f"Invalid or corrupt .pptx file ({file_size} bytes)",
+            key_insights=[f"python-pptx could not open file: {exc}"],
+            suggested_actions=[
+                "Verify the file is a valid .pptx",
+                "Re-export from PowerPoint or Keynote",
+            ],
+        )
+
+    slide_blocks, stats = collect_pptx_slide_blocks(prs)
+    total_shapes = stats["total_shapes"]
+    total_chars = stats["total_chars"]
+    notes_count = stats["notes_count"]
+    image_count = stats["image_count"]
+
+    full_text = "\n\n".join(slide_blocks)
+    content_preview = (full_text[:500] + "...") if len(full_text) > 500 else full_text
+
+    structure_summary = (
+        f"PowerPoint presentation with {len(prs.slides)} slide(s), "
+        f"{total_shapes} shape(s), {image_count} picture(s), "
+        f"{notes_count} slide(s) with speaker notes ({total_chars} text chars)"
+    )
+
+    insights = [
+        f"{len(prs.slides)} slide(s) extracted via python-pptx",
+        f"{total_chars} characters of text content available",
+    ]
+    if notes_count:
+        insights.append(f"{notes_count} slide(s) contain speaker notes")
+    if image_count:
+        insights.append(
+            f"{image_count} embedded picture(s) - consider OCR if text is in images"
+        )
+    if total_chars == 0:
+        insights.append("No extractable text - slides may consist of images only")
+
+    actions = [
+        "Use the extracted slide text as agent context",
+        "Pass to document_parser tool with parser_name='unstructured' for richer chunks",
+        "Render to PDF/HTML for visual preview if needed",
+    ]
+    if image_count:
+        actions.append("Run image OCR on slides whose text lives inside images")
+
+    return FileAnalysisResult(
+        filename=filename,
+        file_type=file_ext,
+        size=file_size,
+        content_preview=content_preview,
+        structure_summary=structure_summary,
+        key_insights=insights,
+        suggested_actions=actions,
+    )
 
 
 def _analyze_generic_file(

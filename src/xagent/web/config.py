@@ -65,6 +65,7 @@ ALLOWED_EXTENSIONS = {
         ".xlsx",
         ".xls",
         ".pptx",
+        ".ppt",
     ]
     + list(BINARY_EXTENSIONS),
     "text": [".txt", ".md", ".html", ".htm"],
@@ -81,6 +82,7 @@ ALLOWED_EXTENSIONS = {
         ".xlsx",
         ".xls",
         ".pptx",
+        ".ppt",
     ],
     "image": [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico"],
 }
