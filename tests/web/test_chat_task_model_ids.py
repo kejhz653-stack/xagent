@@ -164,25 +164,6 @@ def test_standalone_task_create_defaults_to_think(test_db, user1_headers):
     assert resp.json()["execution_mode"] == "think"
 
 
-def test_task_create_with_empty_delegate_selection_stores_none(test_db, user1_headers):
-    from xagent.web.models.task import Task
-
-    resp = client.post(
-        "/api/chat/task/create",
-        json={"title": "delegates", "description": "desc", "delegate_agent_ids": []},
-        headers=user1_headers,
-    )
-    assert resp.status_code == 200
-
-    db = next(get_db())
-    try:
-        task = db.query(Task).filter(Task.id == resp.json()["task_id"]).first()
-        assert task is not None
-        assert task.delegate_agent_ids is None
-    finally:
-        db.close()
-
-
 def test_task_create_allows_shared_model_ids(
     test_db, user1_headers, user2_headers, sample_model_data
 ):
@@ -354,46 +335,39 @@ def test_task_create_skips_stale_user_default(test_db, user1_headers):
         db.close()
 
 
-def test_task_create_rejects_draft_delegate_agents(test_db, user1_headers):
+def test_task_create_rejects_agent_id_from_another_user(
+    test_db, user1_headers, user2_headers
+):
     from xagent.web.models.agent import Agent, AgentStatus
-    from xagent.web.models.task import Task
+    from xagent.web.models.database import get_db
     from xagent.web.models.user import User
 
     db = next(get_db())
     try:
-        user1 = db.query(User).filter(User.username == "user1").first()
-        assert user1 is not None
+        user2 = db.query(User).filter(User.username == "user2").first()
+        assert user2 is not None
 
-        published_agent = Agent(
-            user_id=user1.id,
-            name="published delegate",
-            status=AgentStatus.PUBLISHED,
-        )
-        draft_agent = Agent(
-            user_id=user1.id,
-            name="draft delegate",
+        agent = Agent(
+            user_id=user2.id,
+            name="user2-private-agent",
+            description="private",
             status=AgentStatus.DRAFT,
         )
-        db.add_all([published_agent, draft_agent])
+        db.add(agent)
         db.commit()
-        db.refresh(published_agent)
-        db.refresh(draft_agent)
+        db.refresh(agent)
 
         resp = client.post(
             "/api/chat/task/create",
             json={
-                "title": "delegate-agent-task",
+                "title": "agent-ownership-check",
                 "description": "desc",
-                "delegate_agent_ids": [published_agent.id, draft_agent.id],
+                "agent_id": agent.id,
             },
             headers=user1_headers,
         )
-        assert resp.status_code == 400
-        assert "delegate agents" in resp.json()["detail"]
 
-        created_task = (
-            db.query(Task).filter(Task.title == "delegate-agent-task").first()
-        )
-        assert created_task is None
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Agent not found or access denied"
     finally:
         db.close()
