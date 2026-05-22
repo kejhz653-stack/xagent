@@ -348,7 +348,7 @@ export function Sidebar({ className, allowCollapse = true }: SidebarProps) {
   const [showUserMenu, setShowUserMenu] = useState(false)
   const [isAboutOpen, setIsAboutOpen] = useState(false)
   const sidebarRef = useRef<HTMLDivElement | null>(null)
-  const taskListRef = useRef<HTMLDivElement | null>(null)
+  const contentScrollRef = useRef<HTMLDivElement | null>(null)
   const userMenuRef = useRef<HTMLDivElement | null>(null)
 
   // Handle click outside for user menu
@@ -389,7 +389,6 @@ export function Sidebar({ className, allowCollapse = true }: SidebarProps) {
   const [page, setPage] = useState(1)
   const [hasMore, setHasMore] = useState(true)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
-  const navRef = useRef<HTMLElement | null>(null)
   const pathnameRef = useRef(pathname)
   const pageRef = useRef(page)
   const displayVersion = versionInfo?.display_version || "unknown"
@@ -612,10 +611,10 @@ export function Sidebar({ className, allowCollapse = true }: SidebarProps) {
 
   // Monitor task list changes, if content is not enough to fill the container and there is more data, automatically load the next page
   useEffect(() => {
-    if (!taskListRef.current || !isHistoryExpanded) return
+    if (!contentScrollRef.current || !isHistoryExpanded) return
 
-    const { scrollHeight, clientHeight } = taskListRef.current
-    const isVisible = taskListRef.current.getClientRects().length > 0
+    const { scrollHeight, clientHeight } = contentScrollRef.current
+    const isVisible = contentScrollRef.current.getClientRects().length > 0
     if (!isVisible || clientHeight <= 0) return
 
     // If content height is less than or equal to container height (plus a buffer), and there is more data, and not loading
@@ -651,7 +650,9 @@ export function Sidebar({ className, allowCollapse = true }: SidebarProps) {
     return () => clearTimeout(timer)
   }, [searchQuery, loadTasks, isHistoryExpanded])
 
-  const handleScroll = (e: React.UIEvent<HTMLElement>) => {
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!isHistoryExpanded) return
+
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget
     if (clientHeight <= 0) return
 
@@ -816,11 +817,14 @@ export function Sidebar({ className, allowCollapse = true }: SidebarProps) {
       </div>
 
       {/* Navigation */}
-      <div className="flex-1 flex flex-col min-h-0 px-3 pb-4">
+      <div
+        ref={contentScrollRef}
+        onScroll={handleScroll}
+        className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3"
+      >
         {/* Sticky Navigation Groups */}
         <nav
-          ref={navRef}
-          className="z-10 bg-transparent -mx-3 px-3 py-2 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']"
+          className="z-10 bg-transparent -mx-3 px-3 py-2"
         >
           {/* Groups */}
           {navigationGroups.map((group, groupIndex) => (
@@ -910,7 +914,7 @@ export function Sidebar({ className, allowCollapse = true }: SidebarProps) {
         </nav>
 
         {/* History Section */}
-        <div className="mt-auto flex flex-col overflow-hidden shrink-0">
+        <div className="flex flex-col overflow-hidden shrink-0 border-t border-border/40 pt-2 pb-4">
           <div
             className="px-4 py-2 text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center justify-between transition-colors group h-8 shrink-0"
           >
@@ -977,9 +981,7 @@ export function Sidebar({ className, allowCollapse = true }: SidebarProps) {
 
           {isHistoryExpanded && (
             <div
-              ref={taskListRef}
-              className="space-y-1 overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none'] max-h-[304px]"
-              onScroll={handleScroll}
+              className="space-y-1"
             >
               {isLoadingTasks ? (
                 <div className="flex items-center justify-center py-4">
