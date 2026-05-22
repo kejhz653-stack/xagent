@@ -35,7 +35,7 @@ export interface Interaction {
 }
 import { useWebSocket } from "@/hooks/use-websocket"
 import { useAuth } from "@/contexts/auth-context"
-import { getApiUrl, getUploadApiUrl } from "@/lib/utils"
+import { getApiUrl, getUploadApiUrl, shouldAutoOpenTaskPreview } from "@/lib/utils"
 import { apiRequest, getUploadErrorMessage, isJsonRecord, parseApiResponse, UPLOAD_ERROR_MESSAGES } from "@/lib/api-wrapper"
 import { useI18n } from "@/contexts/i18n-context"
 import { normalizeTimestampMs } from "@/lib/time-utils"
@@ -56,6 +56,53 @@ const arraysEqual = (a: string[], b: string[]): boolean => {
   if (a == null || b == null) return false
   if (a.length !== b.length) return false
   return a.every((val, index) => val === b[index])
+}
+
+type GeneratedPreviewFile = {
+  fileId: string
+  fileName: string
+}
+
+const normalizeGeneratedPreviewFiles = (files: Array<string | any> | undefined): GeneratedPreviewFile[] => {
+  if (!Array.isArray(files)) return []
+
+  return files.map((file) => {
+    if (typeof file === 'object' && file !== null) {
+      return {
+        fileId: file.file_id || '',
+        fileName: file.filename || 'unknown',
+      }
+    }
+
+    return {
+      fileId: '',
+      fileName: 'unknown',
+    }
+  }).filter((file) => !!file.fileId)
+}
+
+const getAutoOpenGeneratedPreviewIndex = (files: GeneratedPreviewFile[]): number => {
+  return files.findIndex((file) => shouldAutoOpenTaskPreview(file.fileName))
+}
+
+const dispatchAutoOpenPreview = (
+  files: Array<string | any> | undefined,
+  dispatch: React.Dispatch<any>,
+) => {
+  const previewFiles = normalizeGeneratedPreviewFiles(files)
+  const autoOpenIndex = getAutoOpenGeneratedPreviewIndex(previewFiles)
+  if (autoOpenIndex < 0) return
+
+  const autoOpenFile = previewFiles[autoOpenIndex]
+  dispatch({
+    type: "OPEN_FILE_PREVIEW",
+    payload: {
+      fileId: autoOpenFile.fileId,
+      fileName: autoOpenFile.fileName,
+      files: previewFiles,
+      index: autoOpenIndex,
+    }
+  })
 }
 
 // Function to clear duplicate message cache
@@ -2335,17 +2382,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                           <button
                             onClick={() => {
                               // Dispatch custom event to open file preview with all files
-                              const allFiles = fileOutputsData.map((file: string | any) => {
-                                let fFileName, fFilePath
-                                if (typeof file === 'object' && file !== null) {
-                                  fFileName = file.filename || 'unknown'
-                                  fFilePath = file.file_id || ''
-                                } else {
-                                  fFileName = 'unknown'
-                                  fFilePath = ''
-                                }
-                                return { fileName: fFileName, fileId: fFilePath }
-                              }).filter((item: { fileId: string }) => !!item.fileId)
+                              const allFiles = normalizeGeneratedPreviewFiles(fileOutputsData)
 
                               if (!filePath) {
                                 return
@@ -2385,6 +2422,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                   }
                 })
               }
+
+              dispatchAutoOpenPreview(fileOutputsData, dispatch)
             }
 
             // Update task status and trigger sidebar update
@@ -3391,17 +3430,7 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
                       <button
                         onClick={() => {
                           // Dispatch custom event to open file preview with all files
-                          const allFiles = (taskData.file_outputs || []).map((file: string | any) => {
-                            let fFileName, fFilePath
-                            if (typeof file === 'object' && file !== null) {
-                              fFileName = file.filename || 'unknown'
-                              fFilePath = file.file_id || ''
-                            } else {
-                              fFileName = 'unknown'
-                              fFilePath = ''
-                            }
-                            return { fileName: fFileName, fileId: fFilePath }
-                          }).filter((item: { fileId: string }) => !!item.fileId)
+                          const allFiles = normalizeGeneratedPreviewFiles(taskData.file_outputs)
 
                           if (!filePath) {
                             return
@@ -3441,6 +3470,8 @@ export function AppProvider({ children, token }: { children: React.ReactNode; to
               }
             })
           }
+
+          dispatchAutoOpenPreview(taskData.file_outputs, dispatch)
         }
 
         dispatch({ type: "SET_PROCESSING", payload: false })
