@@ -54,12 +54,15 @@ from ..services.managed_file_ref import (
 from ..services.task_lease_service import (
     acquire_task_lease,
     mark_task_paused_if_stale,
-    release_current_runner_task_lease,
-    release_task_lease,
     run_task_lease_heartbeat,
     stop_task_lease_heartbeat,
 )
 from ..services.uploaded_file_store import UploadedFileStore
+from ..services.workforce_runtime import (
+    release_current_runner_task_lease_with_workforce_sync,
+    release_task_lease_with_workforce_sync,
+    sync_workforce_run_status,
+)
 from ..tracing import create_ephemeral_tracer
 from ..user_isolated_memory import UserContext
 from ..utils.db_timezone import safe_timestamp_to_unix
@@ -1265,6 +1268,7 @@ async def execute_task_background(
                 # written either (a quiet "stuck RUNNING" outcome).
                 if result.get("status") == "waiting_for_user":
                     task_updated.status = TaskStatus.WAITING_FOR_USER
+                    sync_workforce_run_status(db_new, task_updated, task_updated.status)
                     db_new.commit()
                     waiting_for_control = True
                     logger.info(
@@ -1272,6 +1276,7 @@ async def execute_task_background(
                     )
                 elif result.get("status") == "interrupted":
                     task_updated.status = TaskStatus.PAUSED
+                    sync_workforce_run_status(db_new, task_updated, task_updated.status)
                     db_new.commit()
                     waiting_for_control = True
                     logger.info(
@@ -1285,6 +1290,7 @@ async def execute_task_background(
                         task_updated.status = TaskStatus.COMPLETED
                     else:
                         task_updated.status = TaskStatus.FAILED
+                    sync_workforce_run_status(db_new, task_updated, task_updated.status)
                     db_new.commit()
                     logger.info(
                         f"Updated task {task_id} status to {task_updated.status.value}"
@@ -1423,6 +1429,12 @@ async def execute_resume_background(
         db_lease = next(db_gen)
         try:
             lease = acquire_task_lease(db_lease, task_id)
+            if lease is not None:
+                task_for_sync = db_lease.query(Task).filter(Task.id == task_id).first()
+                if task_for_sync is not None and sync_workforce_run_status(
+                    db_lease, task_for_sync, TaskStatus.RUNNING
+                ):
+                    db_lease.commit()
         finally:
             db_lease.close()
         if lease is None:
@@ -1472,25 +1484,17 @@ async def execute_resume_background(
             task_updated = db_new.query(Task).filter(Task.id == task_id).first()
             if task_updated:
                 if status == "waiting_for_user":
-                    lease_released = release_current_runner_task_lease(
-                        db_new, task_id, status=TaskStatus.WAITING_FOR_USER
-                    )
-                    db_new.refresh(task_updated)
+                    final_task_status = TaskStatus.WAITING_FOR_USER
                 elif status == "interrupted":
-                    lease_released = release_current_runner_task_lease(
-                        db_new, task_id, status=TaskStatus.PAUSED
-                    )
-                    db_new.refresh(task_updated)
+                    final_task_status = TaskStatus.PAUSED
                 elif success:
-                    lease_released = release_current_runner_task_lease(
-                        db_new, task_id, status=TaskStatus.COMPLETED
-                    )
-                    db_new.refresh(task_updated)
+                    final_task_status = TaskStatus.COMPLETED
                 else:
-                    lease_released = release_current_runner_task_lease(
-                        db_new, task_id, status=TaskStatus.FAILED
-                    )
-                    db_new.refresh(task_updated)
+                    final_task_status = TaskStatus.FAILED
+                lease_released = release_current_runner_task_lease_with_workforce_sync(
+                    db_new, task_id, status=final_task_status
+                )
+                db_new.refresh(task_updated)
                 final_status = task_updated.status.value
             else:
                 final_status = task.status.value
@@ -1552,7 +1556,9 @@ async def execute_resume_background(
             db_gen = get_db()
             db_cleanup = next(db_gen)
             try:
-                release_task_lease(db_cleanup, lease, status=TaskStatus.FAILED)
+                release_task_lease_with_workforce_sync(
+                    db_cleanup, lease, status=TaskStatus.FAILED
+                )
             finally:
                 db_cleanup.close()
         _clear_task_pause_accepted(task_id)
@@ -2442,6 +2448,8 @@ async def handle_chat_message(
                             )
                             return
                         db.refresh(task)
+                        if sync_workforce_run_status(db, task, task.status):
+                            db.commit()
 
                         (
                             model_id,
@@ -2913,11 +2921,11 @@ async def handle_execute_task(
 
                 # Update task status
                 if result.get("success", False):
-                    release_current_runner_task_lease(
+                    release_current_runner_task_lease_with_workforce_sync(
                         db, task_id, status=TaskStatus.COMPLETED
                     )
                 else:
-                    release_current_runner_task_lease(
+                    release_current_runner_task_lease_with_workforce_sync(
                         db, task_id, status=TaskStatus.FAILED
                     )
                 db.refresh(task)
@@ -3026,6 +3034,8 @@ async def send_historical_data_as_stream(
 
             if mark_task_paused_if_stale(db, task):
                 db.refresh(task)
+                if sync_workforce_run_status(db, task, task.status):
+                    db.commit()
 
             max_trace_event_id = (
                 db.query(func.max(TraceEvent.id))
