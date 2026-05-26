@@ -163,7 +163,7 @@ class CreateKnowledgeBaseFromUrlTool(AbstractBaseTool):
             ).model_dump()
 
 
-@register_tool
+@register_tool(categories={"knowledge"})
 async def create_web_ingestion_tools(config: WebToolConfig) -> list[AbstractBaseTool]:
     """Create web ingestion tools."""
     try:

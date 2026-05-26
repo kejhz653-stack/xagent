@@ -8,7 +8,7 @@ and configuration management.
 # mypy: ignore-errors
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from .....core.workspace import TaskWorkspace
 from .base import AbstractBaseTool, Tool
 from .config import BaseToolConfig
 from .output_filter_wrapper import OutputFilteredToolWrapper
+from .selection_spec import ToolSelectionSpec
 
 if TYPE_CHECKING:
     from .....sandbox.base import Sandbox
@@ -32,26 +33,57 @@ class ToolRegistry:
 
     Tools are registered using @register_tool decorator and automatically
     discovered during create_all_tools().
+
+    Each registration may declare the tool ``categories`` it produces so
+    that ``create_registered_tools`` can skip the creator entirely when
+    a :class:`ToolSelectionSpec` excludes those categories. Creators that
+    produce tools across multiple categories or that produce categories
+    dynamically (MCP / Custom API / Published Agent) should leave
+    ``categories`` unset and short-circuit internally based on the spec.
     """
 
-    _tool_creators: List[Callable] = []
+    # (creator, declared_categories) — declared_categories is None for
+    # dynamic creators that filter internally based on the spec.
+    _tool_creators: List[Tuple[Callable, Optional[FrozenSet[str]]]] = []
     _modules_imported = False
 
     @classmethod
-    def register(cls, creator: Callable) -> Callable:
+    def register(
+        cls,
+        creator: Optional[Callable] = None,
+        *,
+        categories: Optional[set] = None,
+    ) -> Callable:
         """
         Register a tool creator function.
 
         The creator function will be called during create_all_tools()
         with the current config.
 
-        Usage:
+        Usage (bare decorator, no category metadata):
             @register_tool
             def create_my_tools(config: BaseToolConfig) -> List[Tool]:
                 return [MyTool(...)]
+
+        Usage (with categories — registry can skip this creator when a
+        ToolSelectionSpec excludes all declared categories):
+            @register_tool(categories={"basic"})
+            def create_basic_tools(config: BaseToolConfig) -> List[Tool]:
+                return [BasicTool(...)]
         """
-        cls._tool_creators.append(creator)
-        return creator
+        declared = frozenset(categories) if categories else None
+
+        def _do_register(fn: Callable) -> Callable:
+            cls._tool_creators.append((fn, declared))
+            return fn
+
+        # Bare form: ``@register_tool`` (no parens) — ``creator`` is the
+        # decorated callable; apply immediately.
+        if creator is not None:
+            return _do_register(creator)
+        # Parameterized form: ``@register_tool(categories=...)`` —
+        # ``creator`` is None; return the actual decorator.
+        return _do_register
 
     @classmethod
     def _import_tool_modules(cls):
@@ -89,12 +121,37 @@ class ToolRegistry:
 
     @classmethod
     async def create_registered_tools(cls, config: BaseToolConfig) -> List[Tool]:
-        """Create tools from all registered creators."""
+        """Create tools from all registered creators.
+
+        When ``config.get_tool_selection_spec()`` returns a spec,
+        creators whose declared categories don't intersect
+        ``spec.categories`` are skipped at the registry level (no
+        creator call, no I/O). Creators with no declared categories
+        (dynamic ones: MCP / Custom API / Published Agent / Image /
+        Audio) are always dispatched and are responsible for
+        short-circuiting internally based on the spec.
+        """
         # Import tool modules on first call to trigger decorator registration
         cls._import_tool_modules()
 
-        tools = []
-        for creator in cls._tool_creators:
+        spec: Optional[ToolSelectionSpec] = (
+            config.get_tool_selection_spec()
+            if hasattr(config, "get_tool_selection_spec")
+            else None
+        )
+        tools: List[Tool] = []
+        for creator, declared_cats in cls._tool_creators:
+            # Registry-level skip: declared categories known and no
+            # intersection with the spec's allowed categories. ``spec``
+            # absent, or ``spec.categories`` absent, means "no restriction"
+            # and the creator runs.
+            if (
+                spec is not None
+                and declared_cats is not None
+                and spec.categories is not None
+                and not (declared_cats & spec.categories)
+            ):
+                continue
             try:
                 created_tools = await creator(config)
                 tools.extend(created_tools)
@@ -184,17 +241,50 @@ class ToolFactory:
         # Auto-discover tools from @register_tool decorators
         tools = await ToolRegistry.create_registered_tools(config)
 
-        # Filter tools by allowed_tools if specified
-        allowed_tools = config.get_allowed_tools()
-        if allowed_tools is not None and len(allowed_tools) > 0:
-            tools = [tool for tool in tools if tool.name in allowed_tools]
-            logger.info(
-                f"Filtered tools to {len(tools)} allowed tools: {[t.name for t in tools]}"
+        # Name-level filter via the spec's ``compute_allowed_names``
+        # dispatch. The three return shapes encode the three modes:
+        #
+        #   None             — ALL mode, keep every tool from the registry
+        #   frozenset()      — NONE mode, drop every tool
+        #   frozenset({...}) — BY_CATEGORIES mode, keep only matching names
+        #                      (plus any workforce ``name_extras`` injection)
+        #
+        # Sealed-type dispatch — the three modes are mutually exclusive
+        # and impossible to confuse, unlike the older raw list whose
+        # ``None`` vs ``[]`` distinction was a runtime truthiness check.
+        # Configs that don't carry a spec default to ALL (full set).
+        spec = (
+            config.get_tool_selection_spec()
+            if hasattr(config, "get_tool_selection_spec")
+            else None
+        )
+        if spec is not None:
+            allowed_names = spec.compute_allowed_names(tools)
+        else:
+            # Legacy contract: ``BaseToolConfig.get_allowed_tools()`` is
+            # still a public accessor on non-WebToolConfig subclasses
+            # (e.g. the standalone ``ToolConfig`` in
+            # core/tools/adapters/vibe/config.py:201). A caller that
+            # hasn't migrated to ToolSelectionSpec still expresses the
+            # name allow-list there; honour it so legacy ``ToolConfig``
+            # callers (third-party / standalone embedding) keep working.
+            #   None       — no filter (full default set)
+            #   []         — explicit zero tools
+            #   [...]      — concrete name allow-list
+            legacy_list = (
+                config.get_allowed_tools()
+                if hasattr(config, "get_allowed_tools")
+                else None
             )
-        elif allowed_tools is not None and len(allowed_tools) == 0:
-            logger.warning(
-                "⚠️ allowed_tools is empty list - this will filter out all tools! If you want to allow all tools, set allowed_tools to None"
-            )
+            allowed_names = None if legacy_list is None else frozenset(legacy_list)
+
+        if allowed_names is not None:
+            tools = [tool for tool in tools if tool.name in allowed_names]
+            if allowed_names:
+                logger.info(
+                    f"Filtered tools to {len(tools)} allowed tools: "
+                    f"{[t.name for t in tools]}"
+                )
 
         # Filter out tools disabled by per-user hook policy (execution layer)
         if apply_user_override_filter:

@@ -180,31 +180,42 @@ def test_runtime_config_preserves_task_llm_when_agent_model_is_unavailable():
     agent = MagicMock(id=9, name="Published Agent", execution_mode="balanced")
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = agent
-    manager._get_task_llm_ids = MagicMock(
-        return_value=["qwen3.6-plus", None, None, None]
-    )
-    manager._load_agent_builder_config = MagicMock(
-        return_value={
-            "llms": (None, None, None, None),
-            "saved_model_ids": {"general": 123},
-            "saved_model_descriptors": {
-                "general": {
-                    "pk": 123,
-                    "model_id": "glm4.6v",
-                    "model_name": "glm4.6v",
-                }
-            },
-            "execution_mode": "balanced",
-            "instructions": "",
-            "skills": [],
-            "knowledge_bases": [],
-            "tool_categories": [],
-        }
-    )
 
-    with patch(
-        "xagent.web.api.chat.resolve_llms_from_names",
-        return_value=(task_llm, None, None, None),
+    fake_agent_builder_config = {
+        "llms": (None, None, None, None),
+        "saved_model_ids": {"general": 123},
+        "saved_model_descriptors": {
+            "general": {
+                "pk": 123,
+                "model_id": "glm4.6v",
+                "model_name": "glm4.6v",
+            }
+        },
+        "execution_mode": "balanced",
+        "instructions": "",
+        "skills": [],
+        "knowledge_bases": [],
+        "tool_categories": [],
+    }
+
+    # LLM resolution + agent-builder config loading moved to module-
+    # level ``resolve_task_runtime_config_core`` (called by both the
+    # instance method here and ``load_task_setup_snapshot_sync``);
+    # patch the helpers it actually invokes.
+    with (
+        patch(
+            "xagent.web.services.llm_utils.load_agent_builder_config",
+            return_value=fake_agent_builder_config,
+        ) as load_cfg_mock,
+        patch(
+            "xagent.web.services.llm_utils.UserAwareModelStorage."
+            "resolve_llms_from_names",
+            return_value=(task_llm, None, None, None),
+        ),
+        patch(
+            "xagent.web.services.llm_utils.make_normalize_model_id",
+            return_value=lambda mid, mname: mname,
+        ),
     ):
         runtime_config = manager._resolve_task_runtime_config(
             task_id=42,
@@ -214,7 +225,7 @@ def test_runtime_config_preserves_task_llm_when_agent_model_is_unavailable():
         )
 
     assert runtime_config["task_llm"] is task_llm
-    manager._load_agent_builder_config.assert_called_once_with(agent, db, 71)
+    load_cfg_mock.assert_called_once_with(agent, db, 71)
 
 
 def test_runtime_config_uses_accessible_agent_model_over_task_baseline():
@@ -234,25 +245,32 @@ def test_runtime_config_uses_accessible_agent_model_over_task_baseline():
     db.query.return_value.filter.return_value.first.return_value = MagicMock(
         id=9, name="Published Agent", execution_mode="balanced"
     )
-    manager._get_task_llm_ids = MagicMock(
-        return_value=["qwen3.6-plus", None, None, None]
-    )
-    manager._load_agent_builder_config = MagicMock(
-        return_value={
-            "llms": (agent_llm, None, None, None),
-            "saved_model_ids": {"general": 123},
-            "saved_model_descriptors": {},
-            "execution_mode": "balanced",
-            "instructions": "",
-            "skills": [],
-            "knowledge_bases": [],
-            "tool_categories": [],
-        }
-    )
 
-    with patch(
-        "xagent.web.api.chat.resolve_llms_from_names",
-        return_value=(task_llm, None, None, None),
+    fake_agent_builder_config = {
+        "llms": (agent_llm, None, None, None),
+        "saved_model_ids": {"general": 123},
+        "saved_model_descriptors": {},
+        "execution_mode": "balanced",
+        "instructions": "",
+        "skills": [],
+        "knowledge_bases": [],
+        "tool_categories": [],
+    }
+
+    with (
+        patch(
+            "xagent.web.services.llm_utils.load_agent_builder_config",
+            return_value=fake_agent_builder_config,
+        ),
+        patch(
+            "xagent.web.services.llm_utils.UserAwareModelStorage."
+            "resolve_llms_from_names",
+            return_value=(task_llm, None, None, None),
+        ),
+        patch(
+            "xagent.web.services.llm_utils.make_normalize_model_id",
+            return_value=lambda mid, mname: mname,
+        ),
     ):
         runtime_config = manager._resolve_task_runtime_config(
             task_id=42,
