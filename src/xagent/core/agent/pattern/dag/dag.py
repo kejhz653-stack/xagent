@@ -93,6 +93,18 @@ class _DAGStepRuntime:
     async def stream_final_answer(self, llm: Any, **kwargs: Any) -> Any:
         return await self.parent.run_llm_call(llm, **kwargs)
 
+    async def start_final_answer_stream(self) -> str | None:
+        return None
+
+    async def emit_final_answer_delta(self, message_id: str, delta: str) -> None:
+        del message_id, delta
+
+    async def end_final_answer_stream(self, message_id: str, content: str) -> None:
+        del message_id, content
+
+    async def fail_final_answer_stream(self, message_id: str, error: str) -> None:
+        del message_id, error
+
     async def send_message(
         self,
         *,
@@ -101,11 +113,14 @@ class _DAGStepRuntime:
         expect_response: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        outbound_metadata = dict(metadata or {})
+        outbound_metadata.setdefault("step_id", self.step_id)
+        outbound_metadata.setdefault("dag_step_id", self.step_id)
         return await self.parent.send_message(
             message=message,
             message_type=message_type,
             expect_response=expect_response,
-            metadata=metadata,
+            metadata=outbound_metadata,
         )
 
     async def checkpoint(

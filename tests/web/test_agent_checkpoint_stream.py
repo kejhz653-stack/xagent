@@ -18,6 +18,7 @@ from xagent.core.agent.trace import (
 )
 from xagent.web.api.trace_handlers import DatabaseTraceHandler
 from xagent.web.api.websocket import (
+    _agent_outbound_event_type,
     _is_agent_checkpoint_data,
     _is_duplicate_user_message_turn,
     _persist_agent_outbound_event,
@@ -114,6 +115,39 @@ def test_final_answer_stream_event_is_not_trace_event() -> None:
     assert "data" not in event
 
 
+def test_agent_outbound_event_type_separates_progress_from_questions() -> None:
+    assert (
+        _agent_outbound_event_type(
+            {
+                "message": "Still working",
+                "message_type": "progress",
+                "expect_response": False,
+            }
+        )
+        == "agent_progress"
+    )
+    assert (
+        _agent_outbound_event_type(
+            {
+                "message": "Need input",
+                "message_type": "question",
+                "expect_response": False,
+            }
+        )
+        == "agent_message"
+    )
+    assert (
+        _agent_outbound_event_type(
+            {
+                "message": "Need input",
+                "message_type": "info",
+                "expect_response": True,
+            }
+        )
+        == "agent_message"
+    )
+
+
 def test_persist_agent_outbound_event_uses_payload_ids(monkeypatch) -> None:
     engine = create_engine("sqlite:///:memory:")
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -146,12 +180,12 @@ def test_persist_agent_outbound_event_uses_payload_ids(monkeypatch) -> None:
     monkeypatch.setattr("xagent.web.api.websocket.get_db", get_test_db)
 
     event = create_stream_event(
-        "agent_message",
+        "agent_progress",
         int(task.id),
         {
             "event_id": "agent-event-1",
             "step_id": "react-step-1",
-            "message": "Need input",
+            "message": "Still working",
             "expect_response": False,
         },
     )
@@ -162,7 +196,7 @@ def test_persist_agent_outbound_event_uses_payload_ids(monkeypatch) -> None:
     try:
         trace_event = db.query(DatabaseTraceEvent).filter_by(task_id=int(task.id)).one()
         assert trace_event.event_id == "agent-event-1"
-        assert trace_event.event_type == "agent_message"
+        assert trace_event.event_type == "agent_progress"
         assert trace_event.step_id == "react-step-1"
     finally:
         db.close()
@@ -589,6 +623,71 @@ async def test_historical_replay_skips_checkpoint_rows_before_streaming(
     }
     assert "checkpoint-row" not in streamed_event_ids
     assert "llm-row" in streamed_event_ids
+
+
+@pytest.mark.asyncio
+async def test_historical_replay_marks_assistant_chat_history_for_chat_display(
+    monkeypatch,
+) -> None:
+    SessionLocal, db, task = _create_trace_handler_test_task("chat-history-display")
+    try:
+        task_id = int(task.id)
+        user_id = int(task.user_id)
+        db.add(
+            TaskChatMessage(
+                task_id=task_id,
+                user_id=user_id,
+                role="assistant",
+                content="Final answer",
+                message_type="assistant",
+                created_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    def get_test_db() -> Iterator[Session]:
+        session = SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    sent_events: list[dict] = []
+
+    async def send_personal_message(event: dict, websocket: object) -> None:
+        sent_events.append(event)
+
+    monkeypatch.setattr("xagent.web.models.database.get_db", get_test_db)
+    monkeypatch.setattr("xagent.web.api.websocket.cache_get", lambda *args: None)
+    monkeypatch.setattr(
+        "xagent.web.api.websocket.cache_set", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "xagent.web.api.websocket.manager.send_personal_message",
+        send_personal_message,
+    )
+
+    await send_historical_data_as_stream(
+        websocket=object(),
+        task_id=task_id,
+        user=SimpleNamespace(id=user_id, is_admin=False),
+    )
+
+    assistant_events = [
+        event
+        for event in sent_events
+        if event.get("type") == "trace_event"
+        and event.get("event_type") == "agent_message"
+        and event.get("data", {}).get("message") == "Final answer"
+    ]
+    assert len(assistant_events) == 1
+    assistant_data = assistant_events[0]["data"]
+    assert assistant_data["role"] == "assistant"
+    assert assistant_data["expect_response"] is False
+    assert assistant_data["source"] == "chat_history"
+    assert assistant_data["display"] == "chat"
 
 
 @pytest.mark.asyncio

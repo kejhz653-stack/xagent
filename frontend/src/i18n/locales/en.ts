@@ -2844,6 +2844,7 @@ Build when you need.`
     searchQuery: "Search Query",
     content: "Content",
     toolCallNote: "Tool note",
+    progressMessage: "Progress",
     copy: "Copy",
     previewFile: "Preview File",
     filePrefix: "File:",
