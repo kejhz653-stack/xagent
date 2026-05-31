@@ -28,6 +28,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from xagent.core.file_storage.factory import get_file_storage
@@ -35,6 +36,7 @@ from xagent.web.api.kb import (
     _WEB_FILE_LOCKS,
     _atomic_replace_file,
     _build_ingest_backup_path,
+    _compensate_new_web_ingest_files,
     _copy_upload_file_to_path,
     _get_file_sha256,
     _mark_uploaded_file_for_reindex,
@@ -495,6 +497,74 @@ class TestWebIngestionUploadedFilePersistence:
         assert atomic_replace.called
         assert existing_path.read_text(encoding="utf-8") == "old content"
 
+    def test_refresh_existing_file_rolls_back_failed_upsert_before_restore(
+        self,
+        db_session: Session,
+        test_user: User,
+        mock_user: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+        monkeypatch.setenv(
+            "XAGENT_FILE_MATERIALIZE_DIR", str(tmp_path / "materialized")
+        )
+        get_file_storage.cache_clear()
+
+        temp_dir = tmp_path / "ingest"
+        temp_dir.mkdir()
+        existing_path = temp_dir / "existing.md"
+        existing_path.write_text("old content", encoding="utf-8")
+        temp_file_path = temp_dir / "incoming.md"
+        temp_file_path.write_text("new content", encoding="utf-8")
+
+        existing_record = _upsert_uploaded_file_record(
+            db_session,
+            user_id=int(mock_user.id),
+            filename="existing.md",
+            storage_path=existing_path,
+            mime_type="text/markdown",
+            file_size=existing_path.stat().st_size,
+        )
+        file_id = str(existing_record.file_id)
+
+        def failing_upsert(db: Session, *_args, **_kwargs):
+            db.add(
+                User(
+                    username=str(test_user.username),
+                    password_hash="duplicate",
+                    is_admin=False,
+                )
+            )
+            db.commit()
+
+        with patch(
+            "xagent.web.api.kb._mark_uploaded_file_for_reindex", return_value=True
+        ):
+            with patch(
+                "xagent.web.api.kb._upsert_uploaded_file_record",
+                side_effect=failing_upsert,
+            ):
+                with pytest.raises(IntegrityError):
+                    _refresh_existing_file_if_changed(
+                        existing_record=existing_record,
+                        temp_file_path=temp_file_path,
+                        db_session=db_session,
+                        user_id=int(mock_user.id),
+                        url="https://example.com/page",
+                        filename="existing.md",
+                        url_hash="hash",
+                        processed_urls={},
+                        context="cross-session",
+                    )
+
+        assert existing_path.read_text(encoding="utf-8") == "old content"
+        restored_record = (
+            db_session.query(UploadedFile).filter(UploadedFile.file_id == file_id).one()
+        )
+        assert restored_record.filename == "existing.md"
+        assert list(temp_dir.glob("existing.md.rollback-*")) == []
+
     def test_refresh_existing_file_restores_missing_local_from_durable_before_compare(
         self,
         db_session: Session,
@@ -942,6 +1012,113 @@ class TestIngestWebHandleWebFile:
         assert response.status_code == 500
         assert not expected_persistent.exists()
 
+    def test_ingest_web_zero_success_failure_compensates_new_uploaded_file(
+        self, web_test_env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Zero-success web ingest failure should remove the staged upload row and artifacts."""
+        app, headers, user, TestingSessionLocal = web_test_env
+        client = TestClient(app)
+        monkeypatch.setenv("XAGENT_FILE_STORAGE_URI", (tmp_path / "objects").as_uri())
+        monkeypatch.setenv(
+            "XAGENT_FILE_MATERIALIZE_DIR", str(tmp_path / "materialized")
+        )
+        get_file_storage.cache_clear()
+
+        uploads_root = tmp_path / "uploads"
+        monkeypatch.setenv("XAGENT_UPLOADS_DIR", str(uploads_root))
+        url = "https://example.com/page"
+        collection = "c1"
+        title = "Failed page"
+        url_hash = hashlib.sha256(f"{collection}:{url}".encode()).hexdigest()[:16]
+        filename = f"{url_hash}_{_normalize_web_title_for_filename(title)}.md"
+        expected_persistent = uploads_root / f"user_{user.id}" / collection / filename
+        captured: dict[str, str] = {}
+
+        def patched_get_upload_path(
+            filename_arg: str,
+            *,
+            user_id: int,
+            collection: str,
+            collection_is_sanitized: bool,
+        ) -> Path:
+            assert collection_is_sanitized is True
+            return uploads_root / f"user_{user_id}" / collection / filename_arg
+
+        async def stub_run_web_ingestion(
+            *,
+            collection: str,
+            crawl_config,
+            ingestion_config,
+            user_id: int,
+            is_admin: bool,
+            file_handler,
+        ):
+            temp_md = tmp_path / "temp.md"
+            temp_md.write_text("# Title\n\nBody", encoding="utf-8")
+            file_info = file_handler(temp_md, title, collection, url)
+            captured["file_id"] = str(file_info["file_id"])
+
+            from xagent.core.tools.core.RAG_tools.core.schemas import WebIngestionResult
+            from xagent.web.services.managed_file_ref import build_upload_storage_key
+
+            captured["storage_key"] = build_upload_storage_key(
+                user.id,
+                captured["file_id"],
+                filename,
+            )
+            assert expected_persistent.exists()
+            assert get_file_storage().exists(captured["storage_key"])
+
+            return WebIngestionResult(
+                status="error",
+                collection=collection,
+                total_urls_found=1,
+                pages_crawled=1,
+                pages_failed=1,
+                documents_created=0,
+                chunks_created=0,
+                embeddings_created=0,
+                crawled_urls=[url],
+                failed_urls={url: "embedding failed"},
+                message="failed",
+                warnings=[],
+                elapsed_time_ms=1,
+            )
+
+        with (
+            patch(
+                "xagent.web.api.kb.get_upload_path", side_effect=patched_get_upload_path
+            ),
+            patch(
+                "xagent.web.api.kb.get_session_local", return_value=TestingSessionLocal
+            ),
+            patch(
+                "xagent.web.api.kb.run_web_ingestion",
+                side_effect=stub_run_web_ingestion,
+            ),
+        ):
+            response = client.post(
+                "/api/kb/ingest-web",
+                data={"collection": collection, "start_url": "https://example.com"},
+                headers=headers,
+            )
+
+        assert response.status_code == 500
+        assert captured["file_id"]
+        assert not expected_persistent.exists()
+        assert not get_file_storage().exists(captured["storage_key"])
+
+        session = TestingSessionLocal()
+        try:
+            assert (
+                session.query(UploadedFile)
+                .filter(UploadedFile.file_id == captured["file_id"])
+                .first()
+                is None
+            )
+        finally:
+            session.close()
+
 
 class TestWebFileRefreshHelpers:
     """Test helper functions for stale content refresh."""
@@ -1012,6 +1189,53 @@ class TestWebFileRefreshHelpers:
         processed_urls["hash-key"] = str(file_record.file_id)
 
         assert processed_urls["hash-key"] == "new-file-id"
+
+    def test_compensate_new_web_ingest_files_continues_after_commit_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        compensated_file_ids: list[str] = []
+
+        class _CleanupResult:
+            side_effects_may_remain = False
+            errors: tuple[str, ...] = ()
+
+        def fake_compensate(_db, *, file_id: str, user_id: int):
+            assert user_id == 1
+            compensated_file_ids.append(file_id)
+            return _CleanupResult()
+
+        class _DB:
+            def __init__(self) -> None:
+                self.commits = 0
+                self.rollbacks = 0
+
+            def commit(self) -> None:
+                self.commits += 1
+                if self.commits == 1:
+                    raise RuntimeError("commit unavailable")
+
+            def rollback(self) -> None:
+                self.rollbacks += 1
+
+        monkeypatch.setattr(
+            "xagent.web.api.kb._compensate_new_uploaded_file",
+            fake_compensate,
+        )
+        db = _DB()
+
+        cleanup_incomplete, cleanup_errors = _compensate_new_web_ingest_files(
+            db,  # type: ignore[arg-type]
+            file_ids={"file-b", "file-a"},
+            user_id=1,
+        )
+
+        assert compensated_file_ids == ["file-a", "file-b"]
+        assert db.commits == 2
+        assert db.rollbacks == 1
+        assert cleanup_incomplete is True
+        assert cleanup_errors == [
+            "Database commit failed for file file-a: commit unavailable"
+        ]
 
     def test_mark_uploaded_file_for_reindex_clears_ingestion_runs(
         self, monkeypatch: pytest.MonkeyPatch
