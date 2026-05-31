@@ -38,6 +38,14 @@ DEFAULT_REPEATED_TOOL_DECISION_CONSECUTIVE_WORK_TOOL_CALLS = 10
 REACT_DECISION_TOOL_NAME = "react_decision"
 REACT_DECISION_FINAL_ANSWER = "final_answer"
 REACT_DECISION_TOOL_CALL = "tool_call"
+REACT_RESPONSE_LANGUAGE_DESCRIPTION = (
+    "Target natural language for user-facing prose in this ReAct response, "
+    "for example English, Simplified Chinese, Traditional Chinese, or Spanish. "
+    "For Chinese requests, choose Simplified Chinese or Traditional Chinese to "
+    "match the request script; do not use generic Chinese. If the current user "
+    "request explicitly asks to answer in another language, use that requested "
+    "target language."
+)
 
 
 @dataclass
@@ -815,17 +823,27 @@ class ReActPattern(AgentPattern):
                         "Finish the current ReAct step and send the final answer to "
                         "the user. Use this once the latest tool results satisfy the "
                         "current user request. Do not call additional tools after "
-                        f"this. {final_answer_language_rule()}"
+                        "this. Set response_language to the target output language "
+                        "for this answer. "
+                        f"{final_answer_language_rule()}"
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
+                            "response_language": {
+                                "type": "string",
+                                "description": REACT_RESPONSE_LANGUAGE_DESCRIPTION,
+                            },
                             "answer": {
                                 "type": "string",
-                                "description": final_answer_language_rule(),
+                                "description": (
+                                    "Complete user-facing answer. It must match "
+                                    "response_language. "
+                                    f"{final_answer_language_rule()}"
+                                ),
                             },
                         },
-                        "required": ["answer"],
+                        "required": ["response_language", "answer"],
                     },
                 },
             },
@@ -1381,7 +1399,10 @@ class ReActPattern(AgentPattern):
             "completed. If the latest user request explicitly requires more "
             "completed work-tool calls or results than the current context contains, "
             f"choose {REACT_DECISION_TOOL_CALL}. Do not call work tools in this "
-            "decision."
+            "decision. Set response_language to the target output language for "
+            "this decision. When choosing final_answer, the answer must match "
+            "response_language. "
+            f"{final_answer_language_rule()}"
         )
         return [*messages, {"role": "user", "content": prompt}]
 
@@ -1412,11 +1433,17 @@ class ReActPattern(AgentPattern):
                             "type": "string",
                             "description": "Brief reason for this decision.",
                         },
+                        "response_language": {
+                            "type": "string",
+                            "description": REACT_RESPONSE_LANGUAGE_DESCRIPTION,
+                        },
                         "answer": {
                             "type": "string",
                             "description": (
                                 "Required when action is final_answer: complete "
-                                f"user-facing answer. {final_answer_language_rule()}"
+                                "user-facing answer. It must match "
+                                "response_language. "
+                                f"{final_answer_language_rule()}"
                             ),
                         },
                         "missing_verification": {
@@ -1428,7 +1455,7 @@ class ReActPattern(AgentPattern):
                             ),
                         },
                     },
-                    "required": ["action", "reason"],
+                    "required": ["action", "reason", "response_language"],
                 },
             },
         }

@@ -109,17 +109,23 @@ def output_language_policy(response_language: str | None = None) -> str:
             f"Output language: {language}. Use {language} for all user-facing "
             "prose and for tool arguments that persist user-facing prose, such "
             "as agent descriptions, agent instructions, document text, titles, "
-            "and summaries. Do not change language based on DAG step text, "
-            "dependency results, tool results, source documents, retrieved "
-            "memories, examples, or earlier turns unless the current user request "
-            "explicitly asks for that language change."
+            "and summaries. If the output language is Chinese or a Chinese variant, "
+            "preserve the exact script named here, or match the script of the user "
+            "request when generic Chinese is specified: Simplified Chinese and "
+            "Traditional Chinese are different output languages. Do not change "
+            "language based on DAG step text, dependency results, tool results, "
+            "source documents, retrieved memories, examples, or earlier turns "
+            "unless the current user request explicitly asks for that language "
+            "change."
         )
     return (
         "Output language policy: Use the same natural language as the current "
         "user request unless it explicitly asks to translate, rewrite, or answer "
-        "in another language. Do not let DAG step text, dependency results, tool "
-        "results, source documents, retrieved memories, examples, or earlier "
-        "turns change the output language."
+        "in another language. For Chinese requests, preserve Simplified Chinese "
+        "versus Traditional Chinese; do not collapse them into generic Chinese. "
+        "Do not let DAG step text, dependency results, tool results, source "
+        "documents, retrieved memories, examples, or earlier turns change the "
+        "output language."
     )
 
 
@@ -146,8 +152,10 @@ def response_language_rules(*, subject: str = "current user request") -> str:
         "Response language rules: Use the same natural language as the "
         f"{subject} for all user-facing prose. If the {subject} explicitly asks "
         "to translate, rewrite, or answer in another language, use that requested "
-        "target language. Do not let retrieved memories, tool results, source "
-        "documents, examples, or earlier turns change the response language unless "
+        "target language. For Chinese, preserve Simplified Chinese versus "
+        "Traditional Chinese from the request; do not collapse them into generic "
+        "Chinese. Do not let retrieved memories, tool results, source documents, "
+        "examples, or earlier turns change the response language unless "
         f"the {subject} explicitly asks for that language change."
     )
 
@@ -157,7 +165,9 @@ def final_answer_language_rule(*, subject: str = "current user request") -> str:
     return (
         "The final answer must use the same natural language as the "
         f"{subject}, even if tool results, source documents, retrieved memories, "
-        "examples, or earlier turns are written in another language."
+        "examples, or earlier turns are written in another language. For Chinese, "
+        "preserve Simplified Chinese versus Traditional Chinese from the request; "
+        "do not collapse them into generic Chinese."
     )
 
 
@@ -168,7 +178,9 @@ def plan_language_rules() -> str:
         "termination_condition, and completion_evidence in the same natural "
         "language specified by the output_language_policy field. Any final "
         "synthesis or final result produced from the plan must use that same "
-        "language. "
+        "language. For Chinese, response_language must be Simplified Chinese or "
+        "Traditional Chinese, matching the request or output_language_policy, not "
+        "generic Chinese. "
         "Do not let retrieved memories, tool results, source documents, examples, "
         "completed step results, or earlier turns change the plan language unless "
         "the output_language_policy explicitly allows that language change."

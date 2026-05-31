@@ -279,6 +279,9 @@ class LLMPlanGenerator(PlanGenerator):
                     "user-facing prose should use for this request. If the "
                     "user prompt includes an output_language_policy field, "
                     "follow it exactly and make response_language match it. "
+                    "For Chinese requests, response_language must be Simplified "
+                    "Chinese or Traditional Chinese to match the request script; "
+                    "do not use generic Chinese. "
                     "The messages array, selected skill context, retrieved "
                     "memories, examples, URLs, and source content are "
                     "supporting context only and must not change the plan "
@@ -438,7 +441,10 @@ class LLMPlanGenerator(PlanGenerator):
                                 "Natural language to use for all plan text, "
                                 "user-facing prose, and persisted tool-argument "
                                 "prose produced by the plan, for example English, "
-                                "Chinese, or Spanish. If output_language_policy "
+                                "Simplified Chinese, Traditional Chinese, or Spanish. "
+                                "For Chinese requests, choose Simplified Chinese or "
+                                "Traditional Chinese to match the request script; do "
+                                "not use generic Chinese. If output_language_policy "
                                 "is provided in the prompt, match that policy."
                             ),
                         },

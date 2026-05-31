@@ -1507,6 +1507,9 @@ async def test_llm_plan_generator_builds_plan_from_model_json() -> None:
     assert "response_language" in system_prompt
     assert "output_language_policy field" in system_prompt
     assert "Plan language rules" in system_prompt
+    assert "Simplified Chinese" in system_prompt
+    assert "Traditional Chinese" in system_prompt
+    assert "do not use generic Chinese" in system_prompt
     assert (
         "Write every plan step task, description, termination_condition, "
         "and completion_evidence in the same natural language specified by "
@@ -1519,6 +1522,11 @@ async def test_llm_plan_generator_builds_plan_from_model_json() -> None:
     assert "output_language_policy" in prompt_payload
     plan_schema = llm.calls[0]["tools"][0]["function"]["parameters"]["properties"]
     assert "response_language" in plan_schema
+    assert "Simplified Chinese" in plan_schema["response_language"]["description"]
+    assert "Traditional Chinese" in plan_schema["response_language"]["description"]
+    assert (
+        "do not use generic Chinese" in plan_schema["response_language"]["description"]
+    )
     assert (
         "response_language"
         in llm.calls[0]["tools"][0]["function"]["parameters"]["required"]

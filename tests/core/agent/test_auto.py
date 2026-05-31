@@ -587,6 +587,9 @@ async def test_auto_pattern_final_answer_completes_without_child_pattern() -> No
     assert "user-visible DAG execution" in decision_prompt
     assert "execution tools are available" in decision_prompt
     assert "Set response_language" in decision_prompt
+    assert "Simplified Chinese" in decision_prompt
+    assert "Traditional Chinese" in decision_prompt
+    assert "do not use generic Chinese" in decision_prompt
     assert "Available tool names" not in decision_prompt
     tool_schema = llm.calls[0]["tools"][0]["function"]
     assert "answer argument is mandatory" in tool_schema["description"]
@@ -594,6 +597,9 @@ async def test_auto_pattern_final_answer_completes_without_child_pattern() -> No
         "response_language"
     ]
     assert "Natural language to use" in response_language_schema["description"]
+    assert "Simplified Chinese" in response_language_schema["description"]
+    assert "Traditional Chinese" in response_language_schema["description"]
+    assert "do not use generic Chinese" in response_language_schema["description"]
     assert "Output language policy" in response_language_schema["description"]
     assert "response_language" in tool_schema["parameters"]["required"]
     answer_schema = tool_schema["parameters"]["properties"]["answer"]

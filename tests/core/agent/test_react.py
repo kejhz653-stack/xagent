@@ -807,6 +807,7 @@ async def test_react_pattern_uses_decision_for_repeated_tools() -> None:
                             "arguments": (
                                 '{"action":"final_answer",'
                                 '"reason":"已有结果足够回答",'
+                                '"response_language":"Simplified Chinese",'
                                 '"answer":"可以基于已有搜索结果回答。"}'
                             ),
                         },
@@ -832,6 +833,18 @@ async def test_react_pattern_uses_decision_for_repeated_tools() -> None:
     assert [schema["function"]["name"] for schema in llm.calls[2]["tools"]] == [
         "react_decision"
     ]
+    decision_schema = llm.calls[2]["tools"][0]["function"]["parameters"]
+    response_language_schema = decision_schema["properties"]["response_language"]
+    assert "response_language" in decision_schema["required"]
+    assert "Simplified Chinese" in response_language_schema["description"]
+    assert "Traditional Chinese" in response_language_schema["description"]
+    assert "generic Chinese" in response_language_schema["description"]
+    decision_prompt = llm.calls[2]["messages"][-1]["content"]
+    assert "Set response_language" in decision_prompt
+    assert "answer must match response_language" in decision_prompt
+    assert "When choosing final_answer" in decision_prompt
+    assert "same natural language as the current user request" in decision_prompt
+    assert "Simplified Chinese versus Traditional Chinese" in decision_prompt
     assert pattern.pending_tool_calls == []
 
 
@@ -1503,7 +1516,15 @@ async def test_react_pattern_reserves_control_tool_names_in_schema() -> None:
         "same natural language as the current user request"
         in final_answer_schema["description"]
     )
+    assert "response_language" in final_answer_schema["parameters"]["required"]
+    response_language_schema = final_answer_schema["parameters"]["properties"][
+        "response_language"
+    ]
+    assert "Simplified Chinese" in response_language_schema["description"]
+    assert "Traditional Chinese" in response_language_schema["description"]
+    assert "generic Chinese" in response_language_schema["description"]
     answer_schema = final_answer_schema["parameters"]["properties"]["answer"]
+    assert "response_language" in answer_schema["description"]
     assert "tool results, source documents" in answer_schema["description"]
 
 
