@@ -2082,8 +2082,112 @@ class TestCreateAndCallAgent:
                 "spec, not ALL/NONE -- otherwise the factory's name filter "
                 "won't restrict to LinkedIn MCP tools."
             )
-            assert "mcp:LinkedIn" in spec.categories
-            assert spec.mcp_servers == frozenset({"LinkedIn"})
+            # Orthogonal model: the mcp:<server> scope lands in
+            # mcp_servers only, not in categories (no raw string leak).
+            assert "mcp:LinkedIn" not in spec.categories
+            assert "mcp" not in spec.categories
+            # mcp_servers holds the normalized server key (SSOT lower-cases /
+            # folds), matched at build time against each tool's
+            # metadata.source_server.
+            assert spec.mcp_servers == frozenset({"linkedin"})
+            # Delegated WebToolConfig uses the shared MCP config-loading
+            # helper instead of falling back to the default True. An
+            # mcp:<server> selection -> include_mcp_tools True.
+            assert tool_config._include_mcp_tools is True
+        finally:
+            db.close()
+            try:
+                import os
+
+                os.remove(db_path)
+            except OSError:
+                pass
+
+    @pytest.mark.parametrize(
+        "tool_categories",
+        [["basic"], [], None],
+        ids=["basic-only", "empty-list", "null"],
+    )
+    async def test_delegated_non_mcp_agent_disables_mcp_init(
+        self, tool_categories: list[str] | None
+    ) -> None:
+        """A delegated agent that did not select MCP (``tool_categories``
+        without ``mcp``) must build its WebToolConfig with
+        ``include_mcp_tools=False`` -- so it does not pay MCP server init.
+        Empty and NULL categories still build an ALL-mode selection spec
+        for final filtering, but should not opt into MCP config loading."""
+        db, db_path = _create_session()
+        try:
+            user = User(username="basicdeleg", password_hash="x", is_admin=False)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+            model = Model(
+                model_id="test-model-id",
+                category="llm",
+                model_provider="openai",
+                model_name="gpt-4",
+                api_key="test-api-key",
+                base_url="https://api.openai.com/v1",
+                temperature=0.7,
+                abilities=["chat"],
+            )
+            db.add(model)
+            db.commit()
+            db.refresh(model)
+
+            agent = Agent(
+                user_id=user.id,
+                name="Basic Assistant",
+                description="Nested non-MCP agent",
+                instructions="You are delegated.",
+                status=AgentStatus.PUBLISHED,
+                models={"general": model.id},
+                tool_categories=tool_categories,
+            )
+            db.add(agent)
+            db.commit()
+            db.refresh(agent)
+
+            tool = AgentTool(
+                agent_id=agent.id,
+                agent_name=agent.name,
+                agent_description=agent.description or "",
+                db=db,
+                user_id=user.id,
+                task_id="parent-task-basic",
+            )
+
+            with (
+                patch(
+                    "xagent.web.services.llm_utils.UserAwareModelStorage"
+                ) as mock_storage_class,
+                patch(
+                    "xagent.core.agent.service.AgentService"
+                ) as mock_agent_service_class,
+                patch("xagent.core.memory.in_memory.InMemoryMemoryStore"),
+            ):
+                mock_storage = Mock()
+                mock_llm = Mock()
+                mock_storage.get_llm_by_name_with_access.return_value = mock_llm
+                mock_storage_class.return_value = mock_storage
+
+                mock_agent_service = mock_agent_service_class.return_value
+                mock_agent_service.execute_task = AsyncMock(
+                    return_value={"output": "nested response"}
+                )
+
+                await tool.run_json_async({"task": "do basic work"})
+
+            tool_config = mock_agent_service_class.call_args.kwargs["tool_config"]
+            spec = tool_config.get_tool_selection_spec()
+            if tool_categories:
+                assert spec.includes_mcp() is False
+            else:
+                assert spec.is_all()
+                assert spec.includes_mcp() is True
+            assert tool_config._include_mcp_tools is False
         finally:
             db.close()
             try:

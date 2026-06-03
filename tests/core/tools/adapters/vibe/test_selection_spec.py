@@ -75,14 +75,15 @@ def test_spec_includes_mcp_when_category_present():
     assert spec.includes_mcp() is True
 
 
-def test_spec_excludes_mcp_when_category_missing():
-    """Even with mcp_servers populated, omitting "mcp" from categories
-    disables the MCP creator -- the category gate runs first."""
+def test_spec_scoped_server_includes_mcp_without_plain_category():
+    """A scoped server (``mcp_servers``) drives the MCP creator even when
+    the plain ``"mcp"`` category is absent -- that is exactly the
+    ``mcp:<server>`` intent (categories and mcp_servers are orthogonal)."""
     spec = ToolSelectionSpec(
         categories=frozenset({"basic"}),
         mcp_servers=frozenset({"Gmail"}),
     )
-    assert spec.includes_mcp() is False
+    assert spec.includes_mcp() is True
 
 
 def test_spec_excludes_mcp_on_empty_server_set():
@@ -93,18 +94,6 @@ def test_spec_excludes_mcp_on_empty_server_set():
         mcp_servers=frozenset(),
     )
     assert spec.includes_mcp() is False
-
-
-def test_spec_custom_api_empty_set_excludes():
-    spec = ToolSelectionSpec(custom_api_ids=frozenset())
-    assert spec.includes_custom_api() is False
-
-
-def test_spec_custom_api_none_includes():
-    """None means "no restriction" -- the creator still runs and falls
-    back to whatever DB-level filtering it does internally."""
-    spec = ToolSelectionSpec(custom_api_ids=None)
-    assert spec.includes_custom_api() is True
 
 
 def test_spec_published_agent_empty_set_excludes():
@@ -221,7 +210,8 @@ async def test_registry_runs_published_agent_creator_for_workforce_extras(
 
     spec = ToolSelectionSpec.from_raw(
         tool_categories=["basic"],
-        workforce_extra_names={"agent_42"},
+        published_agent_ids=[42],  # dispatch: run the published-agent creator
+        name_allowlist={"agent_42"},  # filter: keep this worker tool
     )
     tools = await isolated_registry.create_registered_tools(_FakeConfig(spec))
 
@@ -258,7 +248,8 @@ async def test_factory_worker_only_mode_keeps_only_injected_agent_tools(
 
     spec = ToolSelectionSpec.from_raw(
         tool_categories=[],
-        workforce_extra_names={"agent_42"},
+        published_agent_ids=[42],  # dispatch: run the published-agent creator
+        name_allowlist={"agent_42"},  # filter: keep this worker tool
         extras_only_when_unconfigured=True,
     )
     tools = await ToolFactory.create_all_tools(
@@ -318,8 +309,8 @@ class _MCPConfig:
 
 
 async def test_mcp_per_server_filter_skips_non_matching_configs(monkeypatch):
-    """The MCP creator must filter ``mcp_configs`` by
-    ``spec.mcp_servers`` BEFORE handing them to
+    """A server-only selection (``mcp:Gmail``) must filter ``mcp_configs``
+    via ``spec.scoped_mcp_servers()`` BEFORE handing them to
     ``_create_mcp_tools_from_configs`` -- the latter does the network
     session-initialize work whose cost we want to avoid.
 
@@ -347,10 +338,7 @@ async def test_mcp_per_server_filter_skips_non_matching_configs(monkeypatch):
         {"name": "Google Drive"},
         {"name": "Slack"},
     ]
-    spec = ToolSelectionSpec(
-        categories=frozenset({"mcp"}),
-        mcp_servers=frozenset({"Gmail"}),
-    )
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"])
     cfg = _MCPConfig(servers, selection_spec=spec)
 
     await mcp_tools.create_mcp_tools(cfg)
@@ -384,12 +372,9 @@ async def test_mcp_per_server_filter_normalizes_whitespace(monkeypatch):
         {"name": "Google Drive"},
         {"name": "Slack"},
     ]
-    # Spec contains the normalized form (matches how
-    # _build_selection_spec_from_categories assembles it).
-    spec = ToolSelectionSpec(
-        categories=frozenset({"mcp"}),
-        mcp_servers=frozenset({"Google_Drive"}),
-    )
+    # from_raw normalizes "Google Drive" -> "google_drive" on the selector
+    # side; the filter normalizes the config name the same way.
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:Google Drive"])
     cfg = _MCPConfig(servers, selection_spec=spec)
 
     await mcp_tools.create_mcp_tools(cfg)
@@ -420,16 +405,45 @@ async def test_mcp_per_server_filter_empty_match_short_circuits(monkeypatch):
     )
 
     servers = [{"name": "Slack"}]
-    spec = ToolSelectionSpec(
-        categories=frozenset({"mcp"}),
-        mcp_servers=frozenset({"Gmail"}),
-    )
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"])
     cfg = _MCPConfig(servers, selection_spec=spec)
 
     result = await mcp_tools.create_mcp_tools(cfg)
 
     assert result == []
     assert call_count == 0  # short-circuit, no factory call
+
+
+async def test_mcp_parent_category_forwards_all_servers(monkeypatch):
+    """Parent/child rule (③): when the plain ``"mcp"`` parent is present
+    alongside a ``mcp:<server>`` child, ``scoped_mcp_servers()`` returns
+    ``None`` (no restriction), so the pre-build filter forwards EVERY
+    server -- consistent with ``compute_allowed_names`` admitting all MCP
+    tools. The earlier behavior wrongly initialized only the child server."""
+    from xagent.core.tools.adapters.vibe import mcp_tools
+    from xagent.core.tools.adapters.vibe.factory import ToolFactory
+
+    received = []
+
+    async def _fake_create(mcp_configs, sandbox=None):
+        received.append(mcp_configs)
+        return []
+
+    monkeypatch.setattr(
+        ToolFactory,
+        "_create_mcp_tools_from_configs",
+        staticmethod(_fake_create),
+    )
+
+    servers = [{"name": "Gmail"}, {"name": "Slack"}]
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp", "mcp:Gmail"])
+    assert spec.scoped_mcp_servers() is None
+    cfg = _MCPConfig(servers, selection_spec=spec)
+
+    await mcp_tools.create_mcp_tools(cfg)
+
+    assert len(received) == 1
+    assert [c["name"] for c in received[0]] == ["Gmail", "Slack"]
 
 
 async def test_mcp_no_per_server_filter_when_spec_lacks_servers(monkeypatch):
@@ -459,6 +473,46 @@ async def test_mcp_no_per_server_filter_when_spec_lacks_servers(monkeypatch):
 
     assert len(received) == 1
     assert [c["name"] for c in received[0]] == ["Gmail", "Slack"]
+
+
+def test_scoped_mcp_servers_parent_child_table() -> None:
+    """``scoped_mcp_servers()`` encodes the pre-build restriction in one
+    place: frozenset()=none, None=all (parent mcp / ALL), non-empty=scoped."""
+    raw = ToolSelectionSpec.from_raw
+    # server-only -> scoped to that server (normalized key)
+    assert raw(tool_categories=["mcp:Gmail"]).scoped_mcp_servers() == frozenset(
+        {"gmail"}
+    )
+    # plain parent -> unrestricted
+    assert raw(tool_categories=["mcp"]).scoped_mcp_servers() is None
+    # parent + child -> parent wins (unrestricted)
+    assert raw(tool_categories=["mcp", "mcp:Gmail"]).scoped_mcp_servers() is None
+    # unconfigured (_SpecAll) -> unrestricted (维持现状)
+    assert raw(tool_categories=[]).scoped_mcp_servers() is None
+    # explicit none -> initialize nothing
+    assert raw(explicit_none=True).scoped_mcp_servers() == frozenset()
+    # category without mcp -> nothing
+    assert raw(tool_categories=["basic"]).scoped_mcp_servers() == frozenset()
+
+
+def test_should_run_creator_mcp_gate_dispatches_server_only() -> None:
+    """① regression pin: the MCP creator's ``selection_gate="mcp"`` must
+    dispatch on ``spec.includes_mcp()``, NOT category intersection, so a
+    server-only ``mcp:Gmail`` spec (categories=frozenset()) still runs it."""
+    from xagent.core.tools.adapters.vibe.factory import ToolRegistry
+
+    declared = frozenset({"mcp"})
+    server_only = ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"])
+    assert server_only.categories == frozenset()  # the trap: empty categories
+    assert ToolRegistry._should_run_creator(declared, server_only, "mcp") is True
+
+    # A non-MCP selection must still skip the MCP creator.
+    basic_only = ToolSelectionSpec.from_raw(tool_categories=["basic"])
+    assert ToolRegistry._should_run_creator(declared, basic_only, "mcp") is False
+
+    # Without the gate (category intersection) the server-only spec would
+    # wrongly be skipped -- this documents why the gate is required.
+    assert ToolRegistry._should_run_creator(declared, server_only, None) is False
 
 
 # ----- factory.py:194 allowed_tools=[] semantic fix ----------------------
@@ -600,28 +654,27 @@ async def test_e2e_multi_category_dispatches_matching_creators(static_creators):
 
 
 async def test_e2e_mcp_server_form_extracts_servers_and_includes_mcp(static_creators):
-    """The ``mcp:<ServerName>`` form is dual-purposed: it both adds
-    ``"mcp"`` to ``spec.categories`` (so the MCP creator runs) and
-    populates ``spec.mcp_servers`` with the normalized server name
-    (so the MCP creator's per-server filter narrows the work). Mimics
-    agent 252 "Email Agent (Sales)_V2" = ['basic', 'file', 'knowledge',
-    'mcp:Gmail']."""
+    """The ``mcp:<ServerName>`` form populates ``spec.mcp_servers`` ONLY
+    (orthogonal to ``categories``): no ``"mcp"``/``"other"`` support
+    category is injected, no raw ``mcp:<server>`` string leaks into
+    ``categories``. The MCP / Custom-API creators run via
+    ``includes_mcp()`` / ``includes_custom_api()`` reading mcp_servers.
+    Mimics agent 252 "Email Agent (Sales)_V2" = ['basic', 'file',
+    'knowledge', 'mcp:Gmail']."""
     from xagent.core.tools.adapters.vibe.selection_spec import ToolSelectionSpec
 
     spec = ToolSelectionSpec.from_raw(
         tool_categories=["basic", "file", "knowledge", "mcp:Gmail"]
     )
 
-    # ``"mcp"`` and ``"other"`` are added implicitly by the builder so the
-    # MCP creator AND the Custom-API-via-"other" legacy match path both
-    # remain reachable; "Gmail" lands normalized in mcp_servers.
-    assert "basic" in spec.categories
-    assert "file" in spec.categories
-    assert "knowledge" in spec.categories
-    assert "mcp" in spec.categories
-    assert "other" in spec.categories
-    assert spec.mcp_servers == frozenset({"Gmail"})
+    # Plain entries land in categories; the server scope lands in
+    # mcp_servers. categories carries NO mcp/other/mcp:Gmail.
+    assert spec.categories == frozenset({"basic", "file", "knowledge"})
+    assert "mcp" not in spec.categories
+    assert "other" not in spec.categories
+    assert spec.mcp_servers == frozenset({"gmail"})
     assert spec.includes_mcp() is True
+    assert spec.includes_custom_api() is True
 
     # Static fakes only — actually dispatching the real MCP creator is
     # covered by the per-server filter tests above.
@@ -651,7 +704,7 @@ async def test_e2e_mcp_server_name_normalization_matches_prod_shape(static_creat
     # All three server names normalized identically to the way
     # mcp_tools.create_mcp_tools normalizes the prod ``mcp_configs[i]["name"]``
     # field when applying the per-server filter.
-    assert spec.mcp_servers == frozenset({"Google_Calendar", "Google_Drive", "HubSpot"})
+    assert spec.mcp_servers == frozenset({"google_calendar", "google_drive", "hubspot"})
 
 
 async def test_e2e_empty_categories_yields_none_spec(static_creators):
@@ -690,10 +743,14 @@ async def test_e2e_empty_categories_yields_none_spec(static_creators):
 # ---------------------------------------------------------------------------
 
 
-def _mock_tool(name: str, category: str):
-    """Build a minimal mock tool with the ``.metadata.category.value``
-    shape the helper inspects. Using ``MagicMock`` here would
-    silently match anything; explicit class keeps the contract tight.
+def _mock_tool(name: str, category: str, source_server: str | None = None):
+    """Build a minimal mock tool with the ``.metadata.category.value`` +
+    ``.metadata.source_server`` shape the helper inspects.
+
+    ``source_server`` mirrors what tool generation stamps (the normalized
+    originating server identity, or ``None`` for non-server tools). It is
+    set explicitly -- a bare ``MagicMock`` attribute would auto-spawn a
+    truthy mock and silently match every scoped server.
     """
     from unittest.mock import MagicMock
 
@@ -702,6 +759,7 @@ def _mock_tool(name: str, category: str):
     tool.metadata = MagicMock()
     tool.metadata.category = MagicMock()
     tool.metadata.category.value = category
+    tool.metadata.source_server = source_server
     return tool
 
 
@@ -760,8 +818,8 @@ def test_select_allowed_tool_names_plain_category_match() -> None:
 
 
 def test_select_allowed_tool_names_mcp_server_form() -> None:
-    """``mcp:<server>`` entry matches tools named ``mcp_<server>_*``
-    (case-insensitive, with spaces / dashes folded to underscores).
+    """``mcp:<server>`` entry matches tools whose structured
+    ``metadata.source_server`` equals the normalized server identity.
     """
     from xagent.core.tools.adapters.vibe.selection_spec import ToolSelectionSpec
 
@@ -769,9 +827,10 @@ def test_select_allowed_tool_names_mcp_server_form() -> None:
         tool_categories=["mcp:Gmail"]
     ).compute_allowed_names(
         [
-            _mock_tool("mcp_gmail_send_message", "mcp"),
-            _mock_tool("mcp_gmail_list_messages", "mcp"),
-            _mock_tool("mcp_slack_send", "mcp"),  # different server, excluded
+            _mock_tool("mcp_gmail_send_message", "mcp", source_server="gmail"),
+            _mock_tool("mcp_gmail_list_messages", "mcp", source_server="gmail"),
+            # different server, excluded
+            _mock_tool("mcp_slack_send", "mcp", source_server="slack"),
             _mock_tool("calculator", "basic"),  # different category, excluded
         ],
     )
@@ -779,6 +838,100 @@ def test_select_allowed_tool_names_mcp_server_form() -> None:
         "mcp_gmail_list_messages",
         "mcp_gmail_send_message",
     ]
+
+
+def test_mcp_server_form_tolerates_stray_whitespace() -> None:
+    """``"mcp: Gmail"`` (stray space after the colon) must normalize to
+    ``gmail`` on the selector side and still match a tool whose
+    ``source_server`` is ``gmail`` -- not ``_gmail`` which would silently
+    match nothing."""
+    from xagent.core.tools.adapters.vibe.selection_spec import ToolSelectionSpec
+
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp: Gmail"])
+    assert spec.mcp_servers == frozenset({"gmail"})
+    result = spec.compute_allowed_names(
+        [
+            _mock_tool("mcp_gmail_send_message", "mcp", source_server="gmail"),
+            _mock_tool("mcp_slack_send", "mcp", source_server="slack"),
+        ],
+    )
+    assert sorted(result or []) == ["mcp_gmail_send_message"]
+
+
+def test_normalize_mcp_server_name_ssot() -> None:
+    """The single normalizer: strip + spaces/hyphens->underscore + lower."""
+    from xagent.core.tools.adapters.vibe.selection_spec import (
+        normalize_mcp_server_name,
+    )
+
+    assert normalize_mcp_server_name(" Gmail ") == "gmail"
+    assert normalize_mcp_server_name("Google Drive") == "google_drive"
+    assert normalize_mcp_server_name("Hub-Spot") == "hub_spot"
+
+
+def test_mcp_server_match_is_case_insensitive_vs_real_tool_name() -> None:
+    """A lowercase ``mcp:gmail`` selector matches a mixed-case tool. The
+    LLM-visible name (``mcp_Gmail_send_message``) keeps the config-name
+    case, but matching is on the structured ``source_server`` that
+    generation normalized to ``gmail`` -- so case never affects the match
+    and the tool name is irrelevant to selection."""
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:gmail"])
+    result = spec.compute_allowed_names(
+        # mixed-case LLM name, normalized source_server (real shape)
+        [_mock_tool("mcp_Gmail_send_message", "mcp", source_server="gmail")],
+    )
+    assert sorted(result or []) == ["mcp_Gmail_send_message"]
+
+
+def test_mcp_server_scope_admits_custom_api_wrapper() -> None:
+    """A scoped ``mcp:<server>`` admits the server's Custom-API wrapper
+    (``other`` category) the same way as its MCP tools: both carry the same
+    structured ``source_server``. Replaces the old name-shape ``==
+    api_<server>_call`` match, so a stray space / case in the wrapper name
+    can no longer silently drop it."""
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"])
+    result = spec.compute_allowed_names(
+        [
+            _mock_tool("mcp_gmail_send", "mcp", source_server="gmail"),
+            _mock_tool("api_Gmail_call", "other", source_server="gmail"),
+            _mock_tool("api_slack_call", "other", source_server="slack"),
+        ],
+    )
+    assert sorted(result or []) == ["api_Gmail_call", "mcp_gmail_send"]
+
+
+def test_server_scope_match_is_independent_of_tool_name() -> None:
+    """The match is purely on structured ``source_server`` -- a tool whose
+    LLM name shares no prefix with the server is still admitted when its
+    generation-stamped ``source_server`` matches, and one that merely looks
+    like it belongs (by name) is not, when ``source_server`` differs. This
+    is what ends the name-transform edge-case class."""
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"])
+    result = spec.compute_allowed_names(
+        [
+            # Name unrelated to "gmail", but source_server matches -> admit.
+            _mock_tool("totally_unrelated_name", "mcp", source_server="gmail"),
+            # Name looks gmail-ish, but source_server differs -> reject.
+            _mock_tool("mcp_gmail_lookalike", "mcp", source_server="other_srv"),
+        ],
+    )
+    assert sorted(result or []) == ["totally_unrelated_name"]
+
+
+def test_empty_source_server_never_matches_scope() -> None:
+    """A degenerate ``mcp:`` selector (empty server) normalizes to ``""``;
+    a tool whose ``source_server`` is empty/whitespace-only also normalizes
+    to ``""``. The truthy guard prevents that accidental equality from
+    admitting an origin-less tool under a scope."""
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:"])
+    assert spec.mcp_servers == frozenset({""})
+    result = spec.compute_allowed_names(
+        [
+            _mock_tool("mcp_send", "mcp", source_server=""),
+            _mock_tool("mcp_gmail_send", "mcp", source_server="gmail"),
+        ],
+    )
+    assert result == frozenset()
 
 
 def test_select_allowed_tool_names_unknown_mcp_server_yields_empty() -> None:
@@ -800,7 +953,7 @@ def test_select_allowed_tool_names_unknown_mcp_server_yields_empty() -> None:
     ).compute_allowed_names(
         [
             _mock_tool("calculator", "basic"),
-            _mock_tool("mcp_gmail_send", "mcp"),
+            _mock_tool("mcp_gmail_send", "mcp", source_server="gmail"),
         ],
     )
     # Non-empty input with no matches: ``compute_allowed_names`` returns
@@ -888,7 +1041,7 @@ def test_by_categories_rejects_empty_categories():
     """
     from xagent.core.tools.adapters.vibe.selection_spec import _SpecByCategories
 
-    with pytest.raises(ValueError, match="non-empty categories"):
+    with pytest.raises(ValueError, match="non-empty selection"):
         _SpecByCategories(categories=frozenset())
 
 
@@ -984,16 +1137,16 @@ def test_from_raw_explicit_none_yields_none_mode():
     assert isinstance(spec, _SpecNone)
 
 
-def test_from_raw_workforce_extras_ignored_in_all_mode():
-    """``workforce_extra_names`` is only meaningful in BY_CATEGORIES;
-    silently ignored in ALL (full set already includes everything)."""
+def test_from_raw_name_allowlist_ignored_in_all_mode():
+    """``name_allowlist`` is only meaningful in BY_CATEGORIES; silently
+    ignored in ALL (full set already includes everything)."""
     from xagent.core.tools.adapters.vibe.selection_spec import _SpecAll
 
     spec = ToolSelectionSpec.from_raw(
         tool_categories=None,
-        workforce_extra_names={"some_worker_tool"},
+        name_allowlist={"some_worker_tool"},
     )
-    # ALL mode: no name_extras field on _SpecAll, callsite that
+    # ALL mode: no name_allowlist field on _SpecAll, callsite that
     # asks for extras must have categories set.
     assert isinstance(spec, _SpecAll)
 
@@ -1006,14 +1159,16 @@ def test_from_raw_can_restrict_unconfigured_agent_to_workforce_extras_only():
 
     spec = ToolSelectionSpec.from_raw(
         tool_categories=[],
-        workforce_extra_names={"agent_42"},
+        published_agent_ids=[42],  # dispatch: run the published-agent creator
+        name_allowlist={"agent_42"},  # filter: keep this worker tool
         extras_only_when_unconfigured=True,
     )
 
     assert isinstance(spec, _SpecByCategories)
     assert spec.categories == frozenset()
-    assert spec.name_extras == frozenset({"agent_42"})
+    assert spec.name_allowlist == frozenset({"agent_42"})
     assert spec.includes_category("basic") is False
+    # Dispatch comes from published_agent_ids, not from the name allow-list.
     assert spec.includes_published_agent() is True
     assert spec.compute_allowed_names(
         [
@@ -1032,26 +1187,29 @@ def test_from_raw_unconfigured_extras_only_without_extras_yields_none_mode():
 
     spec = ToolSelectionSpec.from_raw(
         tool_categories=None,
-        workforce_extra_names=set(),
+        name_allowlist=set(),
         extras_only_when_unconfigured=True,
     )
 
     assert isinstance(spec, _SpecNone)
 
 
-def test_from_raw_workforce_extras_carried_in_by_categories():
-    """In BY_CATEGORIES, ``workforce_extra_names`` lands on
-    :attr:`_SpecByCategories.name_extras` for ``compute_allowed_names``
-    injection."""
+def test_name_allowlist_alone_does_not_trigger_published_dispatch():
+    """``name_allowlist`` (incl. workforce extras) lands on the spec as a
+    pure name-level filter; it MUST NOT by itself trigger the
+    published-agent creator. Dispatch is declared via ``"agent"`` category
+    or ``published_agent_ids`` (issue #539 -- filter vs dispatch are
+    orthogonal)."""
     from xagent.core.tools.adapters.vibe.selection_spec import _SpecByCategories
 
     spec = ToolSelectionSpec.from_raw(
         tool_categories=["basic"],
-        workforce_extra_names={"worker_tool_a", "worker_tool_b"},
+        name_allowlist={"worker_tool_a", "worker_tool_b"},
     )
     assert isinstance(spec, _SpecByCategories)
-    assert spec.name_extras == frozenset({"worker_tool_a", "worker_tool_b"})
-    assert spec.includes_published_agent() is True
+    assert spec.name_allowlist == frozenset({"worker_tool_a", "worker_tool_b"})
+    # No "agent" category and no published_agent_ids -> creator stays off.
+    assert spec.includes_published_agent() is False
 
 
 # ----- P2 fix: includes_custom_api with category restriction -------------
@@ -1076,19 +1234,6 @@ def test_by_categories_includes_custom_api_when_other_present():
 
     spec = _SpecByCategories(categories=frozenset({"other"}))
     assert spec.includes_custom_api() is True
-
-
-def test_by_categories_excludes_custom_api_when_other_present_but_ids_empty():
-    """Even with ``"other"`` in categories, an explicit empty
-    ``custom_api_ids=frozenset()`` skips the creator (legacy
-    'explicit exclude' shape preserved)."""
-    from xagent.core.tools.adapters.vibe.selection_spec import _SpecByCategories
-
-    spec = _SpecByCategories(
-        categories=frozenset({"other"}),
-        custom_api_ids=frozenset(),
-    )
-    assert spec.includes_custom_api() is False
 
 
 # ----- compute_allowed_names mode dispatch -------------------------------
@@ -1120,12 +1265,12 @@ def test_compute_allowed_names_none_returns_empty_frozenset():
 
 def test_compute_allowed_names_by_categories_filters_correctly():
     """BY_CATEGORIES mode: only tools whose category matches survive,
-    plus any ``name_extras`` injection."""
+    plus any ``name_allowlist`` injection."""
     from xagent.core.tools.adapters.vibe.selection_spec import _SpecByCategories
 
     spec = _SpecByCategories(
         categories=frozenset({"basic"}),
-        name_extras=frozenset({"injected_worker_tool"}),
+        name_allowlist=frozenset({"injected_worker_tool"}),
     )
     result = spec.compute_allowed_names(
         [
@@ -1143,7 +1288,7 @@ def test_compute_allowed_names_workforce_extra_does_not_admit_agent_category():
     """
     spec = ToolSelectionSpec.from_raw(
         tool_categories=["basic"],
-        workforce_extra_names={"agent_42"},
+        name_allowlist={"agent_42"},
     )
     result = spec.compute_allowed_names(
         [
@@ -1245,8 +1390,8 @@ async def test_factory_by_categories_filters_by_compute_allowed_names(
 
 
 def test_compute_allowed_names_by_categories_mcp_subcategory_match():
-    """``mcp:Gmail`` sub-category in categories matches ``mcp_gmail_*``
-    tool names (case-insensitive, spaces normalized)."""
+    """``mcp:Gmail`` scope matches tools whose ``source_server`` is
+    ``gmail`` (normalized at generation)."""
     # Use from_raw so ``mcp_servers`` is derived consistently with
     # ``categories`` -- direct ``_SpecByCategories`` construction with
     # ``mcp:<server>`` in categories but ``mcp_servers=None`` is
@@ -1254,9 +1399,10 @@ def test_compute_allowed_names_by_categories_mcp_subcategory_match():
     spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"])
     result = spec.compute_allowed_names(
         [
-            _mock_tool("mcp_gmail_send", "mcp"),
-            _mock_tool("mcp_gmail_read", "mcp"),
-            _mock_tool("mcp_slack_post", "mcp"),  # different server
+            _mock_tool("mcp_gmail_send", "mcp", source_server="gmail"),
+            _mock_tool("mcp_gmail_read", "mcp", source_server="gmail"),
+            # different server
+            _mock_tool("mcp_slack_post", "mcp", source_server="slack"),
             _mock_tool("calc", "basic"),
         ]
     )
@@ -1415,6 +1561,52 @@ def test_factory_falls_back_to_get_allowed_tools_when_spec_none():
         ToolRegistry._modules_imported = saved_imported
 
 
+def test_factory_prefers_spec_and_warns_when_allowed_tools_also_set(caplog):
+    """When BOTH a spec and a legacy allowed_tools list are supplied, the
+    factory prefers the spec (ignores the legacy list) and logs a warning
+    rather than silently intersecting (issue #539)."""
+    import asyncio
+    import logging
+    from unittest.mock import MagicMock as _MagicMock
+
+    tool_a = _mock_tool("a", "basic")
+    tool_b = _mock_tool("b", "basic")
+
+    cfg = _MagicMock()
+    cfg.get_tool_selection_spec.return_value = ToolSelectionSpec.from_raw(
+        tool_categories=["basic"]
+    )
+    cfg.get_allowed_tools.return_value = ["a"]  # stale legacy list
+    cfg.get_sandbox.return_value = None
+    cfg.get_workspace_config.return_value = None
+    cfg.get_user_tool_overrides.return_value = {}
+    cfg.get_max_output_length.return_value = None
+    cfg.get_max_field_count.return_value = None
+    cfg.get_max_recursion_depth.return_value = None
+
+    saved_creators = list(ToolRegistry._tool_creators)
+    saved_imported = ToolRegistry._modules_imported
+    ToolRegistry._tool_creators = []
+    ToolRegistry._modules_imported = True
+    try:
+
+        async def creator(_cfg):
+            return [tool_a, tool_b]
+
+        creator.__name__ = "test_creator"
+        ToolRegistry.register(creator, categories={"basic"})
+
+        with caplog.at_level(logging.WARNING):
+            tools = asyncio.run(ToolFactory.create_all_tools(cfg))
+
+        # Spec wins: "basic" admits both; the legacy ["a"] is ignored.
+        assert {t.name for t in tools} == {"a", "b"}
+        assert any("legacy allowed_tools" in r.getMessage() for r in caplog.records)
+    finally:
+        ToolRegistry._tool_creators = saved_creators
+        ToolRegistry._modules_imported = saved_imported
+
+
 def test_compute_allowed_names_plain_mcp_admits_all_mcp_tools():
     """User picked plain ``["mcp"]`` (no server qualifier) — MUST
     admit every mcp-category tool, not 0. Previously broken because
@@ -1451,8 +1643,8 @@ def test_compute_allowed_names_mcp_server_does_not_broaden_to_all_mcp():
     spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"])
     result = spec.compute_allowed_names(
         [
-            _mock_tool("mcp_gmail_send", "mcp"),
-            _mock_tool("mcp_slack_post", "mcp"),
+            _mock_tool("mcp_gmail_send", "mcp", source_server="gmail"),
+            _mock_tool("mcp_slack_post", "mcp", source_server="slack"),
         ]
     )
     assert result == frozenset({"mcp_gmail_send"})
@@ -1464,38 +1656,71 @@ def test_compute_allowed_names_mixed_plain_and_server_picks():
     spec = ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail", "other"])
     result = spec.compute_allowed_names(
         [
-            _mock_tool("mcp_gmail_send", "mcp"),
-            _mock_tool("mcp_slack_post", "mcp"),
-            _mock_tool("api_custom_call", "other"),
+            _mock_tool("mcp_gmail_send", "mcp", source_server="gmail"),
+            _mock_tool("mcp_slack_post", "mcp", source_server="slack"),
+            _mock_tool("api_custom_call", "other", source_server="custom"),
             _mock_tool("calc", "basic"),
         ]
     )
     assert result == frozenset({"mcp_gmail_send", "api_custom_call"})
 
 
+def test_compute_allowed_names_plain_mcp_wins_over_server_scope():
+    """``["mcp", "mcp:Gmail"]`` — the plain "mcp" category admits ALL mcp
+    tools; the parallel server scope does not narrow it (plain wins)."""
+    spec = ToolSelectionSpec.from_raw(tool_categories=["mcp", "mcp:Gmail"])
+    assert "mcp" in spec.categories
+    assert spec.mcp_servers == frozenset({"gmail"})
+    result = spec.compute_allowed_names(
+        [
+            _mock_tool("mcp_gmail_send", "mcp"),
+            _mock_tool("mcp_slack_post", "mcp"),
+            _mock_tool("calc", "basic"),
+        ]
+    )
+    assert result == frozenset({"mcp_gmail_send", "mcp_slack_post"})
+
+
+def test_from_raw_generic_name_allowlist_unions_into_results():
+    """The generic ``name_allowlist`` param (not only workforce extras)
+    lands on the spec and is unioned into compute_allowed_names alongside
+    the category matches."""
+    spec = ToolSelectionSpec.from_raw(
+        tool_categories=["basic"],
+        name_allowlist={"foo_tool"},
+    )
+    assert spec.name_allowlist == frozenset({"foo_tool"})
+    result = spec.compute_allowed_names(
+        [
+            _mock_tool("calc", "basic"),
+            _mock_tool("img", "image"),
+            _mock_tool("foo_tool", "other"),
+        ]
+    )
+    assert result == frozenset({"calc", "foo_tool"})
+
+
 def test_spec_wants_mcp_only_for_explicit_mcp_selection():
-    """``_spec_wants_mcp`` (chat.py) must NOT trigger MCP DB query for
-    default / no-MCP agents. Pin the contract here to keep the
-    derivation honest."""
-    from xagent.core.tools.adapters.vibe.selection_spec import _SpecAll, _SpecNone
+    """MCP config loading must only run for explicit MCP selections."""
+    from xagent.core.tools.adapters.vibe.selection_spec import (
+        _SpecAll,
+        _SpecNone,
+        should_load_mcp_server_configs,
+    )
     from xagent.web.api.chat import _spec_wants_mcp
 
-    assert _spec_wants_mcp(None) is False  # legacy / no-spec caller
-    assert _spec_wants_mcp(_SpecAll()) is False  # default agent
-    assert _spec_wants_mcp(_SpecNone()) is False  # explicit zero tools
-    assert (
-        _spec_wants_mcp(ToolSelectionSpec.from_raw(tool_categories=["basic"])) is False
-    )  # no mcp picked
-    assert (
-        _spec_wants_mcp(ToolSelectionSpec.from_raw(tool_categories=["mcp"])) is True
-    )  # plain mcp
-    assert (
-        _spec_wants_mcp(ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"]))
-        is True
-    )  # mcp:<server>
-    assert (
-        _spec_wants_mcp(
-            ToolSelectionSpec.from_raw(tool_categories=["basic", "mcp:Gmail"])
-        )
-        is True
-    )  # mixed
+    specs = [
+        (None, False),
+        (_SpecAll(), False),
+        (_SpecNone(), False),
+        (ToolSelectionSpec.from_raw(tool_categories=[]), False),
+        (ToolSelectionSpec.from_raw(tool_categories=None), False),
+        (ToolSelectionSpec.from_raw(tool_categories=["basic"]), False),
+        (ToolSelectionSpec.from_raw(tool_categories=["mcp"]), True),
+        (ToolSelectionSpec.from_raw(tool_categories=["mcp:Gmail"]), True),
+        (ToolSelectionSpec.from_raw(tool_categories=["basic", "mcp:Gmail"]), True),
+    ]
+
+    for spec, expected in specs:
+        assert should_load_mcp_server_configs(spec) is expected
+        assert _spec_wants_mcp(spec) is expected

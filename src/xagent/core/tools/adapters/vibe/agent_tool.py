@@ -1754,7 +1754,10 @@ class AgentTool(AbstractBaseTool):
             # "empty / None tool_categories → build every default tool"
             # invariant is preserved for legacy agents whose
             # ``tool_categories`` field defaults to ``[]``.
-            from .selection_spec import ToolSelectionSpec
+            from .selection_spec import (
+                ToolSelectionSpec,
+                should_load_mcp_server_configs,
+            )
 
             tool_selection_spec = ToolSelectionSpec.from_raw(
                 tool_categories=agent.tool_categories,
@@ -1770,6 +1773,10 @@ class AgentTool(AbstractBaseTool):
                 else None,
                 allowed_skills=agent.skills,
                 tool_selection_spec=tool_selection_spec,
+                # Keep MCP config loading aligned with the direct chat path.
+                # _SpecAll still admits MCP at the final filter layer for
+                # compatibility, but it does not opt into MCP server init.
+                include_mcp_tools=should_load_mcp_server_configs(tool_selection_spec),
                 allowed_agent_ids=self._delegation_allowed_agent_ids,
                 agent_tool_overrides=self._agent_tool_overrides,
                 enable_global_agent_tools=self._enable_global_agent_tools,

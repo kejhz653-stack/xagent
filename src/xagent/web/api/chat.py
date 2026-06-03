@@ -24,6 +24,7 @@ from ...core.model.chat.basic.deepseek import DeepSeekLLM
 from ...core.model.chat.basic.openai import OpenAILLM
 from ...core.model.chat.basic.zhipu import ZhipuLLM
 from ...core.model.providers import is_placeholder_api_key
+from ...core.tools.adapters.vibe.selection_spec import should_load_mcp_server_configs
 from ..auth_dependencies import get_current_user
 from ..dynamic_memory_store import get_memory_store
 from ..models.agent import Agent, AgentStatus, is_workforce_generated_manager_agent
@@ -316,19 +317,12 @@ def _spec_wants_mcp(tool_selection_spec: Optional[Any]) -> bool:
 
     Returns ``False`` for ``None`` (no spec / legacy caller),
     ``_SpecAll`` (no restriction means "build registered defaults",
-    NOT "ALL including MCP"), and ``_SpecNone`` (zero tools). Returns
-    ``True`` only when ``_SpecByCategories._user_categories()`` (the
-    pre-derivation user input) carries the ``mcp`` token or any
-    ``mcp:<server>`` form.
+    NOT "ALL including MCP"), and ``_SpecNone`` (zero tools). Only a
+    ``_SpecByCategories`` whose normalized policy includes MCP (plain
+    ``"mcp"`` category or a scoped ``mcp_servers``) wants MCP loading;
+    this defers to the spec's own ``includes_mcp()`` dispatch.
     """
-    if tool_selection_spec is None:
-        return False
-    if not tool_selection_spec.is_by_categories():
-        return False
-    user_picked = tool_selection_spec._user_categories()
-    return any(
-        c == "mcp" or (isinstance(c, str) and c.startswith("mcp:")) for c in user_picked
-    )
+    return should_load_mcp_server_configs(tool_selection_spec)
 
 
 def _build_tool_selection_spec_for_task(
@@ -351,7 +345,16 @@ def _build_tool_selection_spec_for_task(
     tool_categories = agent_config.get("tool_categories") if agent_config else None
     spec = ToolSelectionSpec.from_raw(
         tool_categories=tool_categories,
-        workforce_extra_names=(
+        # Two orthogonal inputs for the workforce delegation case:
+        #   - published_agent_ids declares the published-agent creator
+        #     should run, scoped to the worker agents (dispatch);
+        #   - name_allowlist narrows its output to the worker tool names
+        #     (filter). The creator's own config.allowed_agent_ids does
+        #     the per-agent DB filtering.
+        published_agent_ids=(
+            list(workforce_runtime.allowed_agent_ids) if workforce_runtime else None
+        ),
+        name_allowlist=(
             workforce_runtime.worker_tool_names if workforce_runtime else None
         ),
         extras_only_when_unconfigured=workforce_runtime is not None,
