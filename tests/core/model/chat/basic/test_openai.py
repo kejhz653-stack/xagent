@@ -357,6 +357,9 @@ class TestOpenAILLM:
         mock_message = MagicMock()
         mock_message.content = None
         mock_message.tool_calls = None
+        # No reasoning trace either: this is a genuinely empty response and
+        # the adapter must keep raising so callers can surface the failure.
+        mock_message.reasoning_content = None
         mock_choice.message = mock_message
 
         mock_response = MagicMock()
@@ -386,6 +389,9 @@ class TestOpenAILLM:
         mock_message = MagicMock()
         mock_message.content = ""
         mock_message.tool_calls = None
+        # No reasoning trace either: ensures the empty-response error path
+        # still triggers when a provider returns nothing useful at all.
+        mock_message.reasoning_content = None
         mock_choice.message = mock_message
 
         mock_response = MagicMock()
@@ -401,6 +407,133 @@ class TestOpenAILLM:
         llm = OpenAILLM(**openai_llm_config)
 
         # Should raise RuntimeError when content is empty and no tool calls
+        with pytest.raises(
+            RuntimeError, match="LLM returned empty content and no tool calls"
+        ):
+            await llm.chat([{"role": "user", "content": "Hello"}])
+
+    @pytest.mark.asyncio
+    async def test_empty_content_falls_back_to_reasoning_content(
+        self, openai_llm_config, mocker
+    ):
+        """Reasoning models (e.g. qwen3-thinking, deepseek-r1) served via
+        OpenAI-compatible endpoints can return ``content=""`` while the
+        partial answer lives in ``reasoning_content`` when the generation
+        is truncated by ``max_tokens`` (``finish_reason="length"``).
+
+        The adapter must surface the reasoning text as content instead of
+        treating the response as invalid — otherwise the model connection
+        test endpoint can never validate a reasoning model.
+        """
+        mock_choice = MagicMock()
+        mock_choice.finish_reason = "length"
+        mock_message = MagicMock()
+        mock_message.content = ""
+        mock_message.tool_calls = None
+        mock_message.reasoning_content = "Here"
+        mock_choice.message = mock_message
+
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.model_dump.return_value = {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "Here",
+                    },
+                }
+            ]
+        }
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(**openai_llm_config)
+
+        result = await llm.chat([{"role": "user", "content": "Hello"}])
+
+        assert result["type"] == "text"
+        assert result["content"] == "Here"
+        assert result["reasoning_content"] == "Here"
+        assert result["reasoning"] == "Here"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_reasoning_content_still_raises(
+        self, openai_llm_config, mocker
+    ):
+        """A whitespace-only reasoning trace must NOT be treated as a
+        usable answer.
+
+        The empty-content guard checks ``content.strip()``; the
+        reasoning fallback must apply the same rule, otherwise a
+        provider returning ``reasoning_content="   "`` would surface a
+        blank string as if it were a valid response.
+        """
+        mock_choice = MagicMock()
+        mock_choice.finish_reason = "length"
+        mock_message = MagicMock()
+        mock_message.content = ""
+        mock_message.tool_calls = None
+        mock_message.reasoning_content = "   \n  "
+        mock_choice.message = mock_message
+
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(**openai_llm_config)
+
+        with pytest.raises(
+            RuntimeError, match="LLM returned empty content and no tool calls"
+        ):
+            await llm.chat([{"role": "user", "content": "Hello"}])
+
+    @pytest.mark.asyncio
+    async def test_finish_reason_stop_with_only_reasoning_still_raises(
+        self, openai_llm_config, mocker
+    ):
+        """The reasoning-content fallback is scoped to truncated responses
+        (``finish_reason="length"``) only.
+
+        If a provider returns ``finish_reason="stop"`` with empty content
+        and a populated reasoning trace, the model is claiming to be done
+        without producing a final answer -- that is a real model failure
+        and the adapter must surface it instead of silently promoting the
+        scratchpad to the assistant message.
+        """
+        mock_choice = MagicMock()
+        mock_choice.finish_reason = "stop"
+        mock_message = MagicMock()
+        mock_message.content = ""
+        mock_message.tool_calls = None
+        mock_message.reasoning_content = "I should answer the user."
+        mock_choice.message = mock_message
+
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(**openai_llm_config)
+
         with pytest.raises(
             RuntimeError, match="LLM returned empty content and no tool calls"
         ):

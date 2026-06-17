@@ -268,9 +268,45 @@ class OpenAILLM(BaseLLM):
 
             # Handle text content
             content = message.content
+            reasoning_content = (
+                message.reasoning_content
+                if hasattr(message, "reasoning_content")
+                else None
+            )
+            finish_reason = getattr(choice, "finish_reason", None)
 
             # Handle None or empty content when no tool calls
             if not content or not content.strip():
+                # Reasoning models (e.g. qwen3-thinking, deepseek-r1, served
+                # via OpenAI-compatible endpoints like Xinference) can return
+                # ``content=""`` while ``reasoning_content`` carries the
+                # partial answer when the generation is truncated by
+                # ``max_tokens`` (``finish_reason="length"``) before the
+                # final answer is produced. Surface the reasoning text as
+                # content so callers (notably the model connection test) do
+                # not treat a truncated-but-otherwise-healthy response as
+                # invalid. Mirror the ``content`` whitespace check so a
+                # reasoning trace that is purely whitespace still falls
+                # through to the empty-response error.
+                #
+                # Gate the fallback strictly on ``finish_reason == "length"``:
+                # any other terminal reason (``"stop"``, ``"content_filter"``,
+                # ``None`` …) means the model claims to be done but produced
+                # no final answer, which is a real failure that callers
+                # must see -- promoting the reasoning trace would silently
+                # hide the bug.
+                if (
+                    finish_reason == "length"
+                    and reasoning_content
+                    and reasoning_content.strip()
+                ):
+                    return {
+                        "type": "text",
+                        "content": reasoning_content,
+                        "reasoning_content": reasoning_content,
+                        "reasoning": reasoning_content,
+                        "raw": resp.model_dump(),
+                    }
                 # If there are no tool calls and no content, this is an error
                 raise RuntimeError(
                     f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
@@ -281,9 +317,9 @@ class OpenAILLM(BaseLLM):
                 "content": content,
                 "raw": resp.model_dump(),
             }
-            if hasattr(message, "reasoning_content") and message.reasoning_content:
-                result["reasoning_content"] = message.reasoning_content
-                result["reasoning"] = message.reasoning_content
+            if reasoning_content:
+                result["reasoning_content"] = reasoning_content
+                result["reasoning"] = reasoning_content
             return result
 
         try:
@@ -610,19 +646,51 @@ class OpenAILLM(BaseLLM):
 
             # Handle text content
             content = message.content
+            reasoning_content = (
+                message.reasoning_content
+                if hasattr(message, "reasoning_content")
+                else None
+            )
+            finish_reason = getattr(choice, "finish_reason", None)
 
             # Handle None or empty content when no tool calls
             if not content or not content.strip():
+                # See ``chat()``: reasoning models truncated by ``max_tokens``
+                # may return ``content=""`` with the partial answer in
+                # ``reasoning_content``. Surface it as content rather than
+                # treating the response as invalid. Mirror the ``content``
+                # whitespace check so a reasoning trace that is purely
+                # whitespace still falls through to the empty-response error.
+                # Gate strictly on ``finish_reason == "length"`` so a
+                # ``"stop"``/``"content_filter"``/``None`` choice with no
+                # final content still raises -- those mean the model claims
+                # to be done but produced nothing, which is a real failure.
+                if (
+                    finish_reason == "length"
+                    and reasoning_content
+                    and reasoning_content.strip()
+                ):
+                    return {
+                        "type": "text",
+                        "content": reasoning_content,
+                        "reasoning_content": reasoning_content,
+                        "reasoning": reasoning_content,
+                        "raw": response.model_dump(),
+                    }
                 # If there are no tool calls and no content, this is an error
                 raise RuntimeError(
                     f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
                 )
 
-            return {
+            result: Dict[str, Any] = {
                 "type": "text",
                 "content": content,
                 "raw": response.model_dump(),
             }
+            if reasoning_content:
+                result["reasoning_content"] = reasoning_content
+                result["reasoning"] = reasoning_content
+            return result
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
