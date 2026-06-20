@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import json
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import timezone
 from enum import Enum
 from typing import Any, cast
 
@@ -480,7 +480,9 @@ class ReActPattern(AgentPattern):
             )
         elif has_tools:
             available_tools = ", ".join(tool_names or []) or "(none)"
-            current_date = datetime.now(timezone.utc).date().isoformat()
+            current_date = (
+                context.created_at.astimezone(timezone.utc).date().isoformat()
+            )
             instruction = (
                 "Use available tools when the user asks you to generate, compute, run, "
                 "execute, inspect, read, write, or otherwise produce a concrete result "
