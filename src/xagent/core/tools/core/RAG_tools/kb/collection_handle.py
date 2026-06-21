@@ -1,11 +1,41 @@
-"""Collection-scoped KB backend handle skeletons."""
+"""Collection-scoped KB backend handle.
+
+``KBCollectionHandle`` is the collection-scoped backend boundary that owns
+backend-specific data-plane mechanics (starting with the document-row
+lifecycle in #508). ``LanceDBCollectionHandle`` is the first implementation and
+delegates to the current LanceDB documents-table mechanics via the bound
+vector index store.
+"""
 
 from __future__ import annotations
 
+import logging
+import uuid
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import timezone
+from pathlib import Path
 
+import pandas as pd
+
+from ..core.exceptions import (
+    ConfigurationError,
+    DatabaseOperationError,
+    DocumentValidationError,
+    HashComputationError,
+)
+from ..core.schemas import (
+    DocumentRecordDetail,
+    DocumentRecordListResult,
+    RegisterDocumentRequest,
+    RegisterDocumentResponse,
+)
 from ..storage.contracts import MetadataStore, VectorIndexStore
+from ..utils import check_file_type, compute_file_hash
+from ..utils.string_utils import generate_deterministic_doc_id
 from .models import KBBackendCapabilities, KBCollectionContext, KBStorageBackend
+
+logger = logging.getLogger(__name__)
 
 
 class KBHandleProvider:
@@ -28,9 +58,76 @@ class KBHandleProvider:
         """
 
 
+class KBCollectionHandle(ABC):
+    """Collection-scoped backend handle for KB data-plane operations.
+
+    Phase 2 moves backend-specific, collection-local data-plane mechanics here.
+    The first family (#508) is the document-row lifecycle. The coordinator owns
+    context resolution, access policy, and orchestration; the handle owns the
+    backend mechanics for a single collection.
+    """
+
+    @abstractmethod
+    def register_document(
+        self, request: RegisterDocumentRequest
+    ) -> RegisterDocumentResponse:
+        """Idempotently register (upsert) a document row for this collection.
+
+        Preserves deterministic doc_id generation, content-hash calculation,
+        file-type detection, and the exact persisted field set.
+        """
+
+    @abstractmethod
+    def load_document(
+        self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
+    ) -> DocumentRecordDetail | None:
+        """Load a single document row by id within the given scope.
+
+        Returns ``None`` when the row is absent or not visible to the scope.
+        """
+
+    @abstractmethod
+    def list_documents(
+        self, *, user_id: int | None = None, is_admin: bool = False, limit: int = 100
+    ) -> DocumentRecordListResult:
+        """List document rows for this collection as a semantic result."""
+
+    @abstractmethod
+    def delete_document_record(
+        self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
+    ) -> int:
+        """Delete only this document's row (no cascade).
+
+        Idempotent; returns the number of rows deleted. Parse/chunk/embedding
+        cleanup is intentionally out of scope here.
+        """
+
+    # --- Rollback compensation (document plane only) ---
+
+    @abstractmethod
+    def snapshot_document(
+        self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
+    ) -> DocumentRecordDetail | None:
+        """Capture the current document row for later restore (None if absent)."""
+
+    @abstractmethod
+    def restore_document(self, snapshot: DocumentRecordDetail) -> None:
+        """Restore a previously snapshotted document row, preserving all fields."""
+
+    @abstractmethod
+    def delete_created_document(
+        self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
+    ) -> int:
+        """Idempotently delete a newly created document row (compensation)."""
+
+
 @dataclass(frozen=True)
-class LanceDBCollectionHandle:
-    """Thin LanceDB-backed collection handle for #495 compatibility wiring."""
+class LanceDBCollectionHandle(KBCollectionHandle):
+    """LanceDB-backed collection handle.
+
+    The initial delegate is the current LanceDB documents-table implementation,
+    reached through the bound vector index store.
+    """
 
     context: KBCollectionContext
 
@@ -53,3 +150,206 @@ class LanceDBCollectionHandle:
     def capabilities(self) -> KBBackendCapabilities:
         """Return backend capabilities for this collection."""
         return self.context.capabilities
+
+    def register_document(
+        self, request: RegisterDocumentRequest
+    ) -> RegisterDocumentResponse:
+        """Register a document row in this collection's documents table.
+
+        Behavior mirrors the legacy ``_register_document`` helper: input
+        validation, file-type detection, deterministic doc_id (with UUID
+        fallback), SHA256 content hash, an admin-scoped existence check for the
+        ``created`` flag, and an idempotent upsert of the full row.
+        """
+        # The handle is collection-scoped: persist into the bound context
+        # collection rather than trusting request.collection, so a reused handle
+        # can never write outside its resolved collection. Through the
+        # coordinator the two already match (context.collection is the
+        # normalized form of request.collection).
+        collection = self.context.collection
+        file_id = request.file_id
+        source_path = request.source_path
+        metadata_source_path = request.metadata_source_path or source_path
+        file_type = request.file_type
+        doc_id = request.doc_id
+        uploaded_at = request.uploaded_at
+
+        if not collection:
+            raise DocumentValidationError("Collection name cannot be empty")
+
+        if not source_path or not Path(source_path).exists():
+            raise DocumentValidationError(f"Source path does not exist: {source_path}")
+
+        # Auto-detect file type if not provided.
+        if not file_type:
+            try:
+                file_type = check_file_type(source_path)
+            except DocumentValidationError as e:
+                raise DocumentValidationError(f"File type detection failed: {e}") from e
+
+        # Deterministic doc_id from (collection, file_id/source_path) for
+        # idempotent registration; fall back to a UUID if generation fails.
+        if not doc_id:
+            try:
+                stable_key = file_id or metadata_source_path
+                doc_id = generate_deterministic_doc_id(collection, stable_key)
+            except Exception as e:  # noqa: BLE001 - fallback keeps registration working
+                logger.debug(
+                    "Deterministic doc_id generation failed (%s), falling back to UUID",
+                    e,
+                )
+                doc_id = str(uuid.uuid4())
+
+        if not uploaded_at:
+            uploaded_at = pd.Timestamp.now(tz="UTC")
+        elif uploaded_at.tzinfo is None:
+            uploaded_at = uploaded_at.replace(tzinfo=timezone.utc)
+
+        try:
+            content_hash = compute_file_hash(source_path)
+        except Exception as e:
+            raise HashComputationError(f"Failed to compute content hash: {e}") from e
+
+        try:
+            vector_store = self.vector_index_store
+
+            # Existence check uses admin mode to see all records (incl. legacy).
+            exists = (
+                vector_store.count_rows_or_zero(
+                    "documents",
+                    filters={"collection": collection, "doc_id": doc_id},
+                    user_id=request.user_id,
+                    is_admin=True,
+                )
+                > 0
+            )
+
+            doc_record = {
+                "collection": collection,
+                "doc_id": doc_id,
+                "file_id": file_id,
+                "source_path": metadata_source_path,
+                "file_type": file_type,
+                "content_hash": content_hash,
+                "uploaded_at": uploaded_at,
+                "title": None,
+                "language": None,
+                "user_id": request.user_id,
+            }
+
+            vector_store.upsert_documents([doc_record])
+            created = not exists
+        except ConfigurationError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError(
+                f"Failed to register document in database: {e}"
+            ) from e
+
+        return RegisterDocumentResponse(
+            doc_id=doc_id,
+            created=created,
+            content_hash=content_hash,
+        )
+
+    def load_document(
+        self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
+    ) -> DocumentRecordDetail | None:
+        """Load a document row by id within this collection's scope.
+
+        Streams the single matching row via ``iter_batches``. Returns ``None``
+        when the row is absent or not visible to the given scope.
+        """
+        vector_store = self.vector_index_store
+        query_filters = {"collection": self.context.collection, "doc_id": doc_id}
+        try:
+            # iter_batches yields only non-empty batches under the same scope
+            # filter, so an absent or out-of-scope row yields nothing and we fall
+            # through to None -- a separate existence count would be redundant.
+            for batch in vector_store.iter_batches(
+                table_name="documents",
+                filters=query_filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            ):
+                # to_pylist() converts the Arrow batch directly to native Python
+                # objects in C++, avoiding Pandas' int->float upcasting on null
+                # columns (the reason from_row still normalizes defensively).
+                for row_dict in batch.to_pylist():
+                    return DocumentRecordDetail.from_row(row_dict)
+            return None
+        except Exception as e:
+            raise DatabaseOperationError(f"Failed to retrieve document: {e}") from e
+
+    def list_documents(
+        self, *, user_id: int | None = None, is_admin: bool = False, limit: int = 100
+    ) -> DocumentRecordListResult:
+        """List document rows for this collection.
+
+        Mirrors the legacy file-level ``_list_documents_impl``: a batch scan of
+        the documents table filtered by collection, honoring ``limit``.
+        """
+        vector_store = self.vector_index_store
+        query_filters = {"collection": self.context.collection}
+        records: list[DocumentRecordDetail] = []
+        try:
+            for batch in vector_store.iter_batches(
+                table_name="documents",
+                filters=query_filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            ):
+                # to_pylist() bypasses Pandas (see load_document) when materializing
+                # rows; from_row still normalizes any residual null sentinels.
+                for row_dict in batch.to_pylist():
+                    records.append(DocumentRecordDetail.from_row(row_dict))
+                    if len(records) >= limit:
+                        break
+                if len(records) >= limit:
+                    break
+        except Exception as e:
+            raise DatabaseOperationError(f"Failed to list documents: {e}") from e
+        return DocumentRecordListResult(documents=records, total_count=len(records))
+
+    def delete_document_record(
+        self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
+    ) -> int:
+        """Delete only this document's row via the bound store (no cascade)."""
+        return self.vector_index_store.delete_document_record(
+            collection_name=self.context.collection,
+            doc_id=doc_id,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    def snapshot_document(
+        self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
+    ) -> DocumentRecordDetail | None:
+        """Capture the current document row before a destructive operation.
+
+        Returns ``None`` when there is no existing row to snapshot. Note that
+        these compensation methods are added for #514 to wire into the live
+        rollback path; #508 only provides the mechanics.
+        """
+        return self.load_document(doc_id, user_id=user_id, is_admin=is_admin)
+
+    def restore_document(self, snapshot: DocumentRecordDetail) -> None:
+        """Restore a snapshotted document row, preserving every field.
+
+        Re-upserts the full row (keyed by collection + doc_id), so ``file_id``,
+        ``user_id``, collection, metadata, content hash, and file type are all
+        restored exactly. Refuses snapshots from another collection so the
+        collection-scoped boundary holds even on direct handle reuse.
+        """
+        if snapshot.collection != self.context.collection:
+            raise DocumentValidationError(
+                f"Handle bound to collection {self.context.collection!r} "
+                f"cannot restore a snapshot from {snapshot.collection!r}"
+            )
+        self.vector_index_store.upsert_documents([snapshot.to_legacy_dict()])
+
+    def delete_created_document(
+        self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
+    ) -> int:
+        """Idempotently delete a newly created document row (row-only)."""
+        return self.delete_document_record(doc_id, user_id=user_id, is_admin=is_admin)
