@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Union
 import openai
 from openai import AsyncOpenAI
 
+from .....config import get_openrouter_official_providers_only
 from ....utils.security import redact_sensitive_text
 from ..exceptions import LLMRetryableError, LLMTimeoutError
 from ..timeout_config import TimeoutConfig
@@ -15,6 +16,115 @@ from ..types import ChunkType, StreamChunk
 from .base import BaseLLM
 
 logger = logging.getLogger(__name__)
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+_OPENROUTER_OFFICIAL_PROVIDERS_BY_AUTHOR: dict[str, tuple[str, ...]] = {
+    "anthropic": ("anthropic",),
+    "deepseek": ("deepseek",),
+    "google": ("google-ai-studio", "google-vertex"),
+    "minimax": ("minimax",),
+    "openai": ("openai",),
+    "z-ai": ("z-ai",),
+}
+
+
+def _truncate_error_detail(value: Any, limit: int = 4000) -> str:
+    text = (
+        value
+        if isinstance(value, str)
+        else json.dumps(value, ensure_ascii=False, default=str)
+    )
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
+
+
+def _openai_error_body(error: BaseException) -> Any:
+    body = getattr(error, "body", None)
+    if body is not None:
+        return body
+    response = getattr(error, "response", None)
+    if response is None:
+        return None
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+def _openai_error_details(error: BaseException) -> list[str]:
+    details: list[str] = []
+    body = _openai_error_body(error)
+    if isinstance(body, dict):
+        error_payload = body.get("error")
+        if isinstance(error_payload, dict):
+            metadata = error_payload.get("metadata")
+            if isinstance(metadata, dict):
+                provider_name = metadata.get("provider_name")
+                if provider_name:
+                    details.append(f"provider_name={provider_name}")
+                raw = metadata.get("raw")
+                if raw:
+                    details.append("provider_raw=" + _truncate_error_detail(raw))
+                previous_errors = metadata.get("previous_errors")
+                if previous_errors:
+                    details.append(
+                        "previous_errors=" + _truncate_error_detail(previous_errors)
+                    )
+            elif metadata is not None:
+                details.append("metadata=" + _truncate_error_detail(metadata))
+    return details
+
+
+def _format_openai_error(prefix: str, error: BaseException) -> str:
+    message = str(getattr(error, "message", None) or error)
+    status_code = getattr(error, "status_code", None)
+    if status_code is not None:
+        formatted = f"{prefix} ({status_code}): {message}"
+    else:
+        formatted = f"{prefix}: {message}"
+
+    details = _openai_error_details(error)
+    if details:
+        formatted = f"{formatted} | " + " | ".join(details)
+    return formatted
+
+
+def _is_retryable_stream_transport_error(error: BaseException) -> bool:
+    retryable_messages = (
+        "peer closed connection",
+        "incomplete chunked read",
+        "remoteprotocolerror",
+        "server disconnected",
+        "connection reset",
+        "connection aborted",
+        "connection lost",
+    )
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(
+            current,
+            (
+                LLMRetryableError,
+                openai.APIConnectionError,
+                openai.APITimeoutError,
+            ),
+        ):
+            return True
+        detail = f"{type(current).__module__}.{type(current).__name__}: {current}"
+        if any(message in detail.lower() for message in retryable_messages):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _openrouter_model_author(model_name: str) -> str:
+    model_slug = model_name.strip().split(":", 1)[0]
+    author, separator, _model = model_slug.partition("/")
+    return author.lower() if separator else ""
 
 
 class OpenAILLM(BaseLLM):
@@ -74,6 +184,34 @@ class OpenAILLM(BaseLLM):
                 timeout=self.timeout,
             )
 
+    def _is_openrouter_client(self) -> bool:
+        return self.base_url.rstrip("/") == OPENROUTER_BASE_URL
+
+    def _openrouter_official_provider_extra_body(
+        self, extra_body: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Pin OpenRouter-hosted official models to their official provider."""
+        if (
+            not get_openrouter_official_providers_only()
+            or not self._is_openrouter_client()
+            or "provider" in extra_body
+        ):
+            return extra_body
+
+        author = _openrouter_model_author(self._model_name)
+        official_providers = _OPENROUTER_OFFICIAL_PROVIDERS_BY_AUTHOR.get(author)
+        if not official_providers:
+            return extra_body
+
+        return {
+            **extra_body,
+            "provider": {
+                "only": list(official_providers),
+                "allow_fallbacks": False,
+                "require_parameters": True,
+            },
+        }
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
@@ -110,7 +248,9 @@ class OpenAILLM(BaseLLM):
         self._ensure_client()
         assert self._client is not None
 
-        extra_body = dict(kwargs.pop("extra_body", {}) or {})
+        extra_body = self._openrouter_official_provider_extra_body(
+            dict(kwargs.pop("extra_body", {}) or {})
+        )
 
         # Prepare the completion parameters
         completion_params = {
@@ -358,7 +498,7 @@ class OpenAILLM(BaseLLM):
 
         except openai.BadRequestError as e:
             # Handle bad request errors
-            error_msg = str(e.message) if hasattr(e, "message") else str(e)
+            error_msg = _format_openai_error("OpenAI bad request", e)
 
             # Check if error is related to response_format
             if (
@@ -375,7 +515,7 @@ class OpenAILLM(BaseLLM):
                 response = await _make_api_call()
                 return _process_response(response)
 
-            raise RuntimeError(f"OpenAI bad request: {error_msg}") from e
+            raise RuntimeError(error_msg) from e
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
@@ -391,10 +531,7 @@ class OpenAILLM(BaseLLM):
 
         except openai.APIError as e:
             # Handle OpenAI API errors
-            error_msg = f"OpenAI API error: {e.message}"
-            if (status_code := getattr(e, "status_code", None)) is not None:
-                error_msg = f"OpenAI API error ({status_code}): {e.message}"
-            raise RuntimeError(error_msg) from e
+            raise RuntimeError(_format_openai_error("OpenAI API error", e)) from e
 
         except Exception as e:
             # Handle any other unexpected errors
@@ -490,6 +627,10 @@ class OpenAILLM(BaseLLM):
         self._ensure_client()
         assert self._client is not None
 
+        extra_body = self._openrouter_official_provider_extra_body(
+            dict(kwargs.pop("extra_body", {}) or {})
+        )
+
         # Prepare the completion parameters
         completion_params = {
             "model": self._model_name,
@@ -537,10 +678,6 @@ class OpenAILLM(BaseLLM):
             else:
                 # Pass through other output_config formats
                 completion_params["output_config"] = output_config
-
-        # Handle thinking mode using extra_body as specified in the requirements
-        # Only add enable_thinking if the client supports this parameter (e.g., standard OpenAI)
-        extra_body = {}
 
         # Check if this is a thinking-only model (only supports thinking_mode, not chat)
         is_thinking_only = (
@@ -706,7 +843,7 @@ class OpenAILLM(BaseLLM):
 
         except openai.BadRequestError as e:
             # Handle bad request errors
-            error_msg = str(e.message) if hasattr(e, "message") else str(e)
+            error_msg = _format_openai_error("OpenAI bad request", e)
 
             # Check if error is related to response_format
             if (
@@ -729,14 +866,11 @@ class OpenAILLM(BaseLLM):
                         **completion_params
                     )
             else:
-                raise RuntimeError(f"OpenAI bad request: {error_msg}") from e
+                raise RuntimeError(error_msg) from e
 
         except openai.APIError as e:
             # Handle OpenAI API errors
-            error_msg = f"OpenAI API error: {e.message}"
-            if (status_code := getattr(e, "status_code", None)) is not None:
-                error_msg = f"OpenAI API error ({status_code}): {e.message}"
-            raise RuntimeError(error_msg) from e
+            raise RuntimeError(_format_openai_error("OpenAI API error", e)) from e
 
         except Exception as e:
             # Handle any other unexpected errors
@@ -779,7 +913,9 @@ class OpenAILLM(BaseLLM):
         self._ensure_client()
         assert self._client is not None
 
-        extra_body = dict(kwargs.pop("extra_body", {}) or {})
+        extra_body = self._openrouter_official_provider_extra_body(
+            dict(kwargs.pop("extra_body", {}) or {})
+        )
 
         # Prepare completion parameters
         completion_params = {
@@ -873,7 +1009,7 @@ class OpenAILLM(BaseLLM):
                     )
             except openai.BadRequestError as e:
                 # Check if error is related to response_format
-                error_msg = str(e.message) if hasattr(e, "message") else str(e)
+                error_msg = _format_openai_error("OpenAI bad request", e)
                 if (
                     "response_format" in error_msg.lower()
                     and "response_format" in completion_params
@@ -998,6 +1134,12 @@ class OpenAILLM(BaseLLM):
             )
             raise LLMRetryableError(f"OpenAI rate limit exceeded: {e.message}") from e
 
+        except openai.APIConnectionError as e:
+            logger.error(
+                "OpenAI stream connection failed: %s", redact_sensitive_text(str(e))
+            )
+            raise LLMRetryableError(f"OpenAI stream connection failed: {str(e)}") from e
+
         except openai.AuthenticationError as e:
             logger.error(
                 "OpenAI authentication failed: %s", redact_sensitive_text(str(e))
@@ -1006,20 +1148,21 @@ class OpenAILLM(BaseLLM):
 
         except openai.BadRequestError as e:
             logger.error("OpenAI bad request: %s", redact_sensitive_text(str(e)))
-            raise RuntimeError(f"OpenAI bad request: {e.message}") from e
+            raise RuntimeError(_format_openai_error("OpenAI bad request", e)) from e
 
         except openai.APIError as e:
             logger.error("OpenAI API error: %s", redact_sensitive_text(str(e)))
-            error_msg = f"OpenAI API error: {e.message}"
-            if (status_code := getattr(e, "status_code", None)) is not None:
-                error_msg = f"OpenAI API error ({status_code}): {e.message}"
-            raise RuntimeError(error_msg) from e
+            raise RuntimeError(_format_openai_error("OpenAI API error", e)) from e
 
         except TimeoutError:
             raise
 
         except Exception as e:
             logger.error("OpenAI stream chat failed: %s", redact_sensitive_text(str(e)))
+            if _is_retryable_stream_transport_error(e):
+                raise LLMRetryableError(
+                    f"OpenAI stream connection failed: {str(e)}"
+                ) from e
             raise RuntimeError(f"LLM stream chat failed: {str(e)}") from e
 
     def _parse_stream_chunk(

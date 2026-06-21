@@ -81,6 +81,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# In-process LLM routing for OpenRouter's "auto" model. xrouter-llm currently
+# does not declare its bundled predictor runtime deps, so keep them explicit
+# here until upstream does.
+router = [
+  "xrouter-llm>=0.1.1",
+  "sentence-transformers>=3.0.0",
+  "torch>=2.0.0",
+]
 # document processing libraries(Non-AI)
 document-processing = [
   "pdfplumber>=0.10.0",
@@ -271,6 +279,9 @@ module = [
   "kombu.*",
   "fsspec",
   "fsspec.*",
+  "joblib",
+  "xrouter_llm",
+  "xrouter_llm.*",
 ]
 ignore_missing_imports = true
 

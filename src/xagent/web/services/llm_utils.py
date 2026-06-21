@@ -20,7 +20,10 @@ from ...core.model.model import (
     ModelConfig,
     RerankModelConfig,
 )
-from ...core.model.providers import is_placeholder_api_key
+from ...core.model.providers import (
+    is_auto_router_model,
+    is_placeholder_api_key,
+)
 from ..models.model import Model
 from ..models.user import UserDefaultModel, UserModel
 
@@ -231,13 +234,25 @@ class CoreStorage:
 
         return result
 
-    def create_llm_instance(self, model_config: ModelConfig) -> Optional[BaseLLM]:
-        """Create LLM instance from ModelConfig"""
+    def create_llm_instance(
+        self,
+        model_config: ModelConfig,
+        downstream_resolver: Optional[Callable[[str], BaseLLM]] = None,
+    ) -> Optional[BaseLLM]:
+        """Create LLM instance from ModelConfig.
+
+        ``downstream_resolver`` is forwarded to the router provider so the
+        "auto" model dispatches through the user-configured OpenRouter model.
+        """
         try:
             if not isinstance(model_config, ChatModelConfig):
                 logger.warning(f"Model is not a chat model: {model_config.model_name}")
                 return None
 
+            # Keep the bare create_base_llm(config) call for ordinary models;
+            # only the OpenRouter "auto" model needs the downstream resolver.
+            if downstream_resolver is not None:
+                return create_base_llm(model_config, downstream_resolver)
             return create_base_llm(model_config)
         except Exception as e:
             logger.error(f"Error creating LLM instance: {e}")
@@ -502,6 +517,13 @@ class UserAwareModelStorage:
                 else:
                     logger.info(f"User {user_id} has access to model '{model_name}'")
 
+            if is_auto_router_model(
+                model_config.model_provider, model_config.model_name
+            ):
+                return self.core_storage.create_llm_instance(
+                    model_config,
+                    downstream_resolver=self._build_openrouter_resolver(model_config),
+                )
             return self.core_storage.create_llm_instance(model_config)
         except Exception as e:
             logger.error(f"Error getting LLM instance for model '{model_name}': {e}")
@@ -509,6 +531,29 @@ class UserAwareModelStorage:
 
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return None
+
+    def _build_openrouter_resolver(
+        self, openrouter_cfg: ChatModelConfig
+    ) -> Callable[[str], BaseLLM]:
+        """Build the "auto" downstream resolver from its own OpenRouter config.
+
+        The ``auto`` model *is* an OpenRouter model, so the chosen slug is run
+        with that same config's credentials + base_url. Returns a closure that,
+        given a slug, builds the concrete downstream LLM.
+        """
+
+        def _resolve(slug: str) -> BaseLLM:
+            child = openrouter_cfg.model_copy(
+                update={"id": f"router:{slug}", "model_name": slug}
+            )
+            llm = self.core_storage.create_llm_instance(child)
+            if llm is None:
+                raise RuntimeError(
+                    f"failed to build OpenRouter downstream LLM for {slug!r}"
+                )
+            return llm
+
+        return _resolve
 
     def get_configured_defaults(
         self, user_id: Optional[int] = None

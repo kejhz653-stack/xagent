@@ -6,7 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from xagent.core.model.chat.basic.openai import OpenAILLM
+from xagent.core.model.chat.basic.openai import OpenAILLM, _format_openai_error
+from xagent.core.model.chat.exceptions import LLMRetryableError
 
 
 class TestOpenAILLM:
@@ -221,6 +222,220 @@ class TestOpenAILLM:
         error_msg = str(exc_info.value)
         assert "OpenAI API error" in error_msg
         print(f"Error handling test passed: {error_msg}")
+
+    def test_format_openrouter_error_preserves_provider_metadata(self):
+        """OpenRouter provider metadata should survive OpenAI-compatible errors."""
+
+        class FakeOpenRouterError(Exception):
+            message = "Provider returned error"
+            status_code = 400
+            body = {
+                "error": {
+                    "metadata": {
+                        "provider_name": "DeepSeek",
+                        "raw": '{"error":{"message":"missing field `name`"}}',
+                        "previous_errors": [
+                            {
+                                "provider_name": "WandB",
+                                "code": 400,
+                                "raw": '{"error":"invalid request params"}',
+                            }
+                        ],
+                    }
+                }
+            }
+
+        error_msg = _format_openai_error(
+            "OpenAI bad request",
+            FakeOpenRouterError("Provider returned error"),
+        )
+
+        assert "OpenAI bad request (400): Provider returned error" in error_msg
+        assert "provider_name=DeepSeek" in error_msg
+        assert "provider_raw=" in error_msg
+        assert "missing field `name`" in error_msg
+        assert "previous_errors=" in error_msg
+        assert "WandB" in error_msg
+
+    @pytest.mark.asyncio
+    async def test_openrouter_official_provider_pinning_disabled_by_default(
+        self, mock_chat_completion, mocker, monkeypatch
+    ):
+        """OpenRouter provider pinning is opt-in to preserve fallback behavior."""
+
+        monkeypatch.delenv("XAGENT_OPENROUTER_OFFICIAL_PROVIDERS_ONLY", raising=False)
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(
+            model_name="deepseek/deepseek-v4-flash",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="test-key",
+        )
+
+        await llm.chat([{"role": "user", "content": "Hello"}])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert "extra_body" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_openrouter_deepseek_uses_official_provider(
+        self, mock_chat_completion, mocker, monkeypatch
+    ):
+        """OpenRouter DeepSeek slugs should avoid third-party host fallbacks."""
+
+        monkeypatch.setenv("XAGENT_OPENROUTER_OFFICIAL_PROVIDERS_ONLY", "true")
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(
+            model_name="deepseek/deepseek-v4-flash",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="test-key",
+        )
+
+        await llm.chat([{"role": "user", "content": "Hello"}])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["extra_body"]["provider"] == {
+            "only": ["deepseek"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+
+    def test_openrouter_official_provider_mapping_covers_auto_router_authors(
+        self, monkeypatch
+    ):
+        """Auto-selected official slugs should pin to official OpenRouter providers."""
+
+        monkeypatch.setenv("XAGENT_OPENROUTER_OFFICIAL_PROVIDERS_ONLY", "true")
+        cases = {
+            "anthropic/claude-sonnet-4.6": ["anthropic"],
+            "deepseek/deepseek-v4-flash": ["deepseek"],
+            "google/gemini-3-flash-preview": ["google-ai-studio", "google-vertex"],
+            "minimax/minimax-m3": ["minimax"],
+            "openai/gpt-5.5": ["openai"],
+            "z-ai/glm-5.2": ["z-ai"],
+        }
+
+        for model_name, expected_providers in cases.items():
+            llm = OpenAILLM(
+                model_name=model_name,
+                base_url="https://openrouter.ai/api/v1",
+                api_key="test-key",
+            )
+
+            extra_body = llm._openrouter_official_provider_extra_body({})
+
+            assert extra_body["provider"]["only"] == expected_providers
+            assert extra_body["provider"]["allow_fallbacks"] is False
+            assert extra_body["provider"]["require_parameters"] is True
+
+    @pytest.mark.asyncio
+    async def test_openrouter_provider_override_is_preserved(
+        self, mock_chat_completion, mocker, monkeypatch
+    ):
+        """Explicit provider routing should win over automatic official pinning."""
+
+        monkeypatch.setenv("XAGENT_OPENROUTER_OFFICIAL_PROVIDERS_ONLY", "true")
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(
+            model_name="deepseek/deepseek-v4-flash",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="test-key",
+        )
+
+        await llm.chat(
+            [{"role": "user", "content": "Hello"}],
+            extra_body={"provider": {"only": ["deepinfra"]}, "trace_id": "manual"},
+        )
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["extra_body"] == {
+            "provider": {"only": ["deepinfra"]},
+            "trace_id": "manual",
+        }
+
+    @pytest.mark.asyncio
+    async def test_openrouter_stream_deepseek_uses_official_provider(
+        self, mocker, monkeypatch
+    ):
+        """Streaming calls should carry the same OpenRouter provider routing."""
+
+        monkeypatch.setenv("XAGENT_OPENROUTER_OFFICIAL_PROVIDERS_ONLY", "true")
+
+        async def empty_stream():
+            if False:
+                yield None
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = empty_stream()
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(
+            model_name="deepseek/deepseek-v4-flash",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="test-key",
+        )
+
+        _ = [
+            chunk
+            async for chunk in llm.stream_chat([{"role": "user", "content": "Hello"}])
+        ]
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["extra_body"]["provider"] == {
+            "only": ["deepseek"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_marks_early_transport_disconnect_retryable(
+        self, openai_llm_config, mocker
+    ):
+        """Early stream transport disconnects should be retried by the wrapper."""
+
+        async def failing_stream():
+            raise RuntimeError(
+                "peer closed connection without sending complete message body "
+                "(incomplete chunked read)"
+            )
+            yield
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = failing_stream()
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(**openai_llm_config)
+
+        with pytest.raises(LLMRetryableError, match="stream connection failed"):
+            _ = [
+                chunk
+                async for chunk in llm.stream_chat(
+                    [{"role": "user", "content": "Hello"}]
+                )
+            ]
 
     @pytest.mark.asyncio
     async def test_custom_parameters(self, llm, mock_chat_completion, mocker):
