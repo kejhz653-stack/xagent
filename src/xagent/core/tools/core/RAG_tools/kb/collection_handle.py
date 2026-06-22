@@ -1,20 +1,22 @@
 """Collection-scoped KB backend handle.
 
 ``KBCollectionHandle`` is the collection-scoped backend boundary that owns
-backend-specific data-plane mechanics (starting with the document-row
-lifecycle in #508). ``LanceDBCollectionHandle`` is the first implementation and
-delegates to the current LanceDB documents-table mechanics via the bound
+backend-specific data-plane mechanics (the document-row lifecycle in #508 and
+the parse/chunk lifecycle in #509). ``LanceDBCollectionHandle`` is the first
+implementation and delegates to the current LanceDB tables via the bound
 vector index store.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -25,13 +27,18 @@ from ..core.exceptions import (
     HashComputationError,
 )
 from ..core.schemas import (
+    ChunkRecordSnapshot,
     DocumentRecordDetail,
     DocumentRecordListResult,
+    ParsedParagraph,
+    ParseRecordDetail,
     RegisterDocumentRequest,
     RegisterDocumentResponse,
 )
 from ..storage.contracts import MetadataStore, VectorIndexStore
 from ..utils import check_file_type, compute_file_hash
+from ..utils.hash_utils import compute_chunk_hash
+from ..utils.metadata_utils import deserialize_metadata, serialize_metadata
 from ..utils.string_utils import generate_deterministic_doc_id
 from .models import KBBackendCapabilities, KBCollectionContext, KBStorageBackend
 
@@ -119,6 +126,205 @@ class KBCollectionHandle(ABC):
         self, doc_id: str, *, user_id: int | None = None, is_admin: bool = False
     ) -> int:
         """Idempotently delete a newly created document row (compensation)."""
+
+    # --- Parse data-plane (#509) ---
+
+    @abstractmethod
+    def parse_exists(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> bool:
+        """Return whether a parse row exists for ``(doc_id, parse_hash)``."""
+
+    @abstractmethod
+    def read_parse_paragraphs(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> list[ParsedParagraph]:
+        """Return the reuse-hit parsed paragraphs for ``(doc_id, parse_hash)``.
+
+        Empty list when no visible parse row exists.
+        """
+
+    @abstractmethod
+    def write_parse(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        parse_method: Any,
+        params: dict[str, Any],
+        paragraphs: list[ParsedParagraph],
+        *,
+        user_id: int | None = None,
+    ) -> bool:
+        """Persist a parse row for this collection (idempotent upsert)."""
+
+    @abstractmethod
+    def read_latest_parse_record(
+        self,
+        doc_id: str,
+        parse_hash: str | None = None,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> ParseRecordDetail | None:
+        """Return the latest parse row (by ``created_at``) for display.
+
+        When ``parse_hash`` is given only that version is considered. Returns
+        ``None`` when no visible parse row exists; the display layer maps that
+        to the appropriate ``DocumentNotFoundError``.
+        """
+
+    # --- Chunk data-plane (#509) ---
+
+    @abstractmethod
+    def chunk_exists(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> bool:
+        """Return whether chunk rows exist for ``(doc_id, parse_hash, config_hash)``."""
+
+    @abstractmethod
+    def read_existing_chunks(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return the reuse-hit chunk dicts (metadata deserialized).
+
+        Empty list when no visible chunk rows exist.
+        """
+
+    @abstractmethod
+    def read_parse_paragraph_dicts(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return parsed paragraphs as ``{text, metadata}`` dicts for chunking."""
+
+    @abstractmethod
+    def write_chunks(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        params: dict[str, Any],
+        chunks: list[dict[str, Any]],
+        *,
+        user_id: int | None = None,
+    ) -> bool:
+        """Persist chunk rows for this collection (idempotent upsert).
+
+        Returns ``False`` when there are no chunks to write.
+        """
+
+    # --- Parse/chunk cleanup (row only, collection scoped) (#509) ---
+
+    @abstractmethod
+    def delete_parse_records(
+        self,
+        doc_id: str,
+        *,
+        parse_hash: str | None = None,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Delete parse rows for a document (optionally one parse_hash).
+
+        Row-only (no cascade into chunks/embeddings); idempotent.
+        """
+
+    @abstractmethod
+    def delete_chunk_records(
+        self,
+        doc_id: str,
+        *,
+        parse_hash: str | None = None,
+        config_hash: str | None = None,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Delete chunk rows for a document (optionally narrowed).
+
+        Row-only (no cascade into embeddings); idempotent.
+        """
+
+    # --- Parse/chunk rollback compensation (methods only; wiring in #514) ---
+
+    @abstractmethod
+    def snapshot_parse(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> ParseRecordDetail | None:
+        """Capture a parse row for later restore (None if absent)."""
+
+    @abstractmethod
+    def restore_parse(self, snapshot: ParseRecordDetail) -> None:
+        """Restore a snapshotted parse row, preserving every field."""
+
+    @abstractmethod
+    def delete_created_parse(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Idempotently delete a newly created parse row (compensation)."""
+
+    @abstractmethod
+    def snapshot_chunks(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> ChunkRecordSnapshot | None:
+        """Capture all chunk rows for a config for later restore (None if absent)."""
+
+    @abstractmethod
+    def restore_chunks(self, snapshot: ChunkRecordSnapshot) -> None:
+        """Restore snapshotted chunk rows, preserving every field."""
+
+    @abstractmethod
+    def delete_created_chunks(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Idempotently delete newly created chunk rows (compensation)."""
 
 
 @dataclass(frozen=True)
@@ -353,3 +559,486 @@ class LanceDBCollectionHandle(KBCollectionHandle):
     ) -> int:
         """Idempotently delete a newly created document row (row-only)."""
         return self.delete_document_record(doc_id, user_id=user_id, is_admin=is_admin)
+
+    # --- Parse data-plane (#509) ---
+
+    def parse_exists(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> bool:
+        """Return whether a parse row exists for ``(doc_id, parse_hash)``."""
+        try:
+            return bool(
+                self.vector_index_store.count_rows_or_zero(
+                    "parses",
+                    filters={
+                        "collection": self.context.collection,
+                        "doc_id": doc_id,
+                        "parse_hash": parse_hash,
+                    },
+                    user_id=user_id,
+                    is_admin=is_admin,
+                )
+                > 0
+            )
+        except Exception as e:
+            raise DatabaseOperationError(f"Database query failed: {e}") from e
+
+    def read_parse_paragraphs(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> list[ParsedParagraph]:
+        """Return the reuse-hit parsed paragraphs for ``(doc_id, parse_hash)``."""
+        vector_store = self.vector_index_store
+        query_filters = {
+            "collection": self.context.collection,
+            "doc_id": doc_id,
+            "parse_hash": parse_hash,
+        }
+        try:
+            if (
+                vector_store.count_rows_or_zero(
+                    "parses", filters=query_filters, user_id=user_id, is_admin=is_admin
+                )
+                == 0
+            ):
+                return []
+            for batch in vector_store.iter_batches(
+                table_name="parses",
+                filters=query_filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            ):
+                for record in batch.to_pylist():
+                    parsed_content = record.get("parsed_content")
+                    if not parsed_content:
+                        continue
+                    data = json.loads(parsed_content)
+                    return [
+                        ParsedParagraph(
+                            text=item.get("text", ""),
+                            metadata=item.get("metadata", {}),
+                        )
+                        for item in data
+                    ]
+            return []
+        except Exception as e:
+            logger.error("Failed to read parse content: %s", e)
+            raise DatabaseOperationError(f"Failed reading parse content: {e}") from e
+
+    def write_parse(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        parse_method: Any,
+        params: dict[str, Any],
+        paragraphs: list[ParsedParagraph],
+        *,
+        user_id: int | None = None,
+    ) -> bool:
+        """Persist a parse row into this collection (idempotent upsert)."""
+        try:
+            parsed_content = json.dumps(
+                [para.model_dump() for para in paragraphs], ensure_ascii=False
+            )
+            parse_record = {
+                "collection": self.context.collection,
+                "doc_id": doc_id,
+                "parse_hash": parse_hash,
+                "parser": f"local:{parse_method}@v1.0.0",
+                "created_at": pd.Timestamp.now(tz="UTC"),
+                "params_json": json.dumps(params, ensure_ascii=False),
+                "parsed_content": parsed_content,
+                "user_id": user_id,
+            }
+            self.vector_index_store.upsert_parses([parse_record])
+            return True
+        except Exception as e:
+            raise DatabaseOperationError(f"Database write failed: {e}") from e
+
+    def read_latest_parse_record(
+        self,
+        doc_id: str,
+        parse_hash: str | None = None,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> ParseRecordDetail | None:
+        """Return the latest parse row (by ``created_at``) for display."""
+        vector_store = self.vector_index_store
+        query_filters: dict[str, Any] = {
+            "collection": self.context.collection,
+            "doc_id": doc_id,
+        }
+        if parse_hash:
+            query_filters["parse_hash"] = parse_hash
+        try:
+            if (
+                vector_store.count_rows_or_zero(
+                    "parses", filters=query_filters, user_id=user_id, is_admin=is_admin
+                )
+                == 0
+            ):
+                return None
+            records: list[dict[str, Any]] = []
+            for batch in vector_store.iter_batches(
+                table_name="parses",
+                filters=query_filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            ):
+                records.extend(batch.to_pylist())
+            if not records:
+                return None
+
+            # Latest by created_at desc; (t is not None, t) sorts None rows last.
+            def _created_at_key(record: dict[str, Any]) -> Any:
+                created_at = record.get("created_at")
+                return (created_at is not None, created_at)
+
+            records_sorted = sorted(records, key=_created_at_key, reverse=True)
+            return ParseRecordDetail.from_row(records_sorted[0])
+        except Exception as e:
+            logger.error("Failed to read latest parse record: %s", e)
+            raise DatabaseOperationError(f"Failed to read parse result: {e}") from e
+
+    # --- Chunk data-plane (#509) ---
+
+    def chunk_exists(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> bool:
+        """Return whether chunk rows exist for the given config."""
+        try:
+            return bool(
+                self.vector_index_store.count_rows_or_zero(
+                    "chunks",
+                    filters={
+                        "collection": self.context.collection,
+                        "doc_id": doc_id,
+                        "parse_hash": parse_hash,
+                        "config_hash": config_hash,
+                    },
+                    user_id=user_id,
+                    is_admin=is_admin,
+                )
+                > 0
+            )
+        except Exception as e:
+            raise DatabaseOperationError(f"Database query failed: {e}") from e
+
+    def read_existing_chunks(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return the reuse-hit chunk dicts (metadata deserialized)."""
+        vector_store = self.vector_index_store
+        query_filters = {
+            "collection": self.context.collection,
+            "doc_id": doc_id,
+            "parse_hash": parse_hash,
+            "config_hash": config_hash,
+        }
+        try:
+            if (
+                vector_store.count_rows_or_zero(
+                    "chunks", filters=query_filters, user_id=user_id, is_admin=is_admin
+                )
+                == 0
+            ):
+                return []
+
+            chunks: list[dict[str, Any]] = []
+            for batch in vector_store.iter_batches(
+                table_name="chunks",
+                filters=query_filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            ):
+                for row in batch.to_pylist():
+                    index_value = row.get("index")
+                    chunks.append(
+                        {
+                            "chunk_id": row["chunk_id"],
+                            "index": int(index_value) if index_value is not None else 0,
+                            "text": row["text"],
+                            "page_number": row.get("page_number"),
+                            "section": row.get("section"),
+                            "anchor": row.get("anchor"),
+                            "json_path": row.get("json_path"),
+                            "created_at": row["created_at"],
+                            "metadata": deserialize_metadata(row.get("metadata")),
+                        }
+                    )
+            # LanceDB does not guarantee scan order; sort by index so reused
+            # chunks come back deterministically (mirrors snapshot_chunks).
+            chunks.sort(key=lambda chunk: chunk["index"])
+            return chunks
+        except Exception as e:
+            logger.error("Failed to get existing chunks: %s", e)
+            raise DatabaseOperationError(f"Database query failed: {e}") from e
+
+    def read_parse_paragraph_dicts(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return parsed paragraphs as ``{text, metadata}`` dicts for chunking."""
+        vector_store = self.vector_index_store
+        query_filters = {
+            "collection": self.context.collection,
+            "doc_id": doc_id,
+            "parse_hash": parse_hash,
+        }
+        try:
+            if (
+                vector_store.count_rows_or_zero(
+                    "parses", filters=query_filters, user_id=user_id, is_admin=is_admin
+                )
+                == 0
+            ):
+                return []
+
+            records: list[dict[str, Any]] = []
+            for batch in vector_store.iter_batches(
+                table_name="parses",
+                filters=query_filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            ):
+                records.extend(batch.to_pylist())
+
+            if not records:
+                return []
+            parsed_content = records[0].get("parsed_content")
+            if not parsed_content:
+                return []
+            data = json.loads(parsed_content)
+            return [
+                {"text": item.get("text", ""), "metadata": item.get("metadata", {})}
+                for item in data
+            ]
+        except Exception as e:
+            logger.error("Failed to read parses: %s", e)
+            raise DatabaseOperationError(f"Failed reading parses: {e}") from e
+
+    def write_chunks(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        params: dict[str, Any],
+        chunks: list[dict[str, Any]],
+        *,
+        user_id: int | None = None,
+    ) -> bool:
+        """Persist chunk rows into this collection (idempotent upsert)."""
+        try:
+            rows = []
+            for chunk in chunks:
+                text = chunk["text"]
+                rows.append(
+                    {
+                        "collection": self.context.collection,
+                        "doc_id": doc_id,
+                        "parse_hash": parse_hash,
+                        "chunk_id": chunk["chunk_id"],
+                        "index": int(chunk["index"]),
+                        "text": text,
+                        "page_number": chunk.get("page_number"),
+                        "section": chunk.get("section"),
+                        "anchor": chunk.get("anchor"),
+                        "json_path": chunk.get("json_path"),
+                        "chunk_hash": compute_chunk_hash(text, params),
+                        "config_hash": config_hash,
+                        "created_at": chunk["created_at"],
+                        "metadata": serialize_metadata(chunk.get("metadata")),
+                        "user_id": user_id,
+                    }
+                )
+
+            if not rows:
+                return False
+
+            self.vector_index_store.upsert_chunks(rows)
+            return True
+        except Exception as e:
+            logger.error("Failed to write chunk records: %s", e)
+            raise DatabaseOperationError(f"Database write failed: {e}") from e
+
+    # --- Parse/chunk cleanup (row only, collection scoped) (#509) ---
+
+    def delete_parse_records(
+        self,
+        doc_id: str,
+        *,
+        parse_hash: str | None = None,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Delete parse rows for a document via the bound store (no cascade)."""
+        return self.vector_index_store.delete_parse_records(
+            collection_name=self.context.collection,
+            doc_id=doc_id,
+            parse_hash=parse_hash,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    def delete_chunk_records(
+        self,
+        doc_id: str,
+        *,
+        parse_hash: str | None = None,
+        config_hash: str | None = None,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Delete chunk rows for a document via the bound store (no cascade)."""
+        return self.vector_index_store.delete_chunk_records(
+            collection_name=self.context.collection,
+            doc_id=doc_id,
+            parse_hash=parse_hash,
+            config_hash=config_hash,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+
+    # --- Parse/chunk rollback compensation (methods only; wiring in #514) ---
+
+    def snapshot_parse(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> ParseRecordDetail | None:
+        """Capture a parse row before a destructive operation (None if absent)."""
+        return self.read_latest_parse_record(
+            doc_id, parse_hash=parse_hash, user_id=user_id, is_admin=is_admin
+        )
+
+    def restore_parse(self, snapshot: ParseRecordDetail) -> None:
+        """Restore a snapshotted parse row, preserving every field.
+
+        Refuses snapshots from another collection so the collection-scoped
+        boundary holds even on direct handle reuse.
+        """
+        if snapshot.collection != self.context.collection:
+            raise DocumentValidationError(
+                f"Handle bound to collection {self.context.collection!r} "
+                f"cannot restore a parse snapshot from {snapshot.collection!r}"
+            )
+        self.vector_index_store.upsert_parses([snapshot.to_legacy_dict()])
+
+    def delete_created_parse(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Idempotently delete a newly created parse row (compensation)."""
+        return self.delete_parse_records(
+            doc_id, parse_hash=parse_hash, user_id=user_id, is_admin=is_admin
+        )
+
+    def snapshot_chunks(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> ChunkRecordSnapshot | None:
+        """Capture all chunk rows for a config (None if none exist)."""
+        vector_store = self.vector_index_store
+        query_filters = {
+            "collection": self.context.collection,
+            "doc_id": doc_id,
+            "parse_hash": parse_hash,
+            "config_hash": config_hash,
+        }
+        try:
+            if (
+                vector_store.count_rows_or_zero(
+                    "chunks", filters=query_filters, user_id=user_id, is_admin=is_admin
+                )
+                == 0
+            ):
+                return None
+            rows: list[dict[str, Any]] = []
+            for batch in vector_store.iter_batches(
+                table_name="chunks",
+                filters=query_filters,
+                user_id=user_id,
+                is_admin=is_admin,
+            ):
+                rows.extend(batch.to_pylist())
+            if not rows:
+                return None
+            # Preserve original chunk order for a faithful restore.
+            rows.sort(key=lambda row: row.get("index") or 0)
+            return ChunkRecordSnapshot.from_rows(rows)
+        except Exception as e:
+            logger.error("Failed to snapshot chunks: %s", e)
+            raise DatabaseOperationError(f"Failed to snapshot chunks: {e}") from e
+
+    def restore_chunks(self, snapshot: ChunkRecordSnapshot) -> None:
+        """Restore snapshotted chunk rows, preserving every field.
+
+        Refuses snapshots whose rows belong to another collection so the
+        collection-scoped boundary holds even on direct handle reuse.
+        """
+        rows = snapshot.to_legacy_dicts()
+        if not rows:
+            return
+        for chunk in snapshot.chunks:
+            if chunk.collection != self.context.collection:
+                raise DocumentValidationError(
+                    f"Handle bound to collection {self.context.collection!r} "
+                    f"cannot restore a chunk snapshot from {chunk.collection!r}"
+                )
+        self.vector_index_store.upsert_chunks(rows)
+
+    def delete_created_chunks(
+        self,
+        doc_id: str,
+        parse_hash: str,
+        config_hash: str,
+        *,
+        user_id: int | None = None,
+        is_admin: bool = False,
+    ) -> int:
+        """Idempotently delete newly created chunk rows (compensation)."""
+        return self.delete_chunk_records(
+            doc_id,
+            parse_hash=parse_hash,
+            config_hash=config_hash,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
