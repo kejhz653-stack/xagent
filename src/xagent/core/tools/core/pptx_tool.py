@@ -1234,9 +1234,15 @@ const estimateFontSize = (text, baseSize, minSize = 12) => {{
   return Math.max(baseSize * 0.4, minSize);
 }};
 
+const hasJapanese = (text) =>
+  typeof text === 'string' && /[\u3040-\u30FF\u31F0-\u31FF]/.test(text);
+
+const hasKorean = (text) =>
+  typeof text === 'string' && /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(text);
+
 const containsCjk = (text) =>
   typeof text === 'string' &&
-  /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(text);
+  /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\u31F0-\u31FF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(text);
 
 const getTextOptions = (text, options = {{}}, role = 'body') => {{
   const merged = {{ ...options }};
@@ -1246,7 +1252,15 @@ const getTextOptions = (text, options = {{}}, role = 'body') => {{
   }}
 
   if (containsCjk(text)) {{
-    merged.lang = merged.lang || 'zh-CN';
+    if (!merged.lang) {{
+      if (hasJapanese(text)) {{
+        merged.lang = 'ja-JP';
+      }} else if (hasKorean(text)) {{
+        merged.lang = 'ko-KR';
+      }} else {{
+        merged.lang = 'zh-CN';
+      }}
+    }}
     if (typographyConfig.cjkFont && !options.fontFace) {{
       merged.fontFace = typographyConfig.cjkFont;
     }}
