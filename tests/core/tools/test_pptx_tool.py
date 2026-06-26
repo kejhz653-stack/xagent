@@ -39,6 +39,7 @@ class TestThemeConfiguration:
         assert config["colors"]["accent"] == "#2563EB"
         assert config["typography"]["title_size"] == 56
         assert config["typography"]["body_size"] == 20
+        assert config["typography"]["cjk_font"] == "Microsoft YaHei"
         assert config["layout"]["title_bar"] is False
         assert config["visual"]["background_style"] == "solid"
 
@@ -115,6 +116,20 @@ class TestPresentationGeneratorRuntime:
         assert observed_node_paths == [
             "/opt/xagent/frontend/node_modules:/usr/lib/node_modules"
         ]
+
+    def test_build_js_script_adds_cjk_lang_and_fontface(self):
+        generator = PresentationGenerator()
+        generator.create("中文演示")
+        generator.add_slide("title", title="中文标题")
+
+        script = generator._build_js_script(
+            "deck.pptx",
+            _preset_to_config("aurora"),
+        )
+
+        assert "const addTextAuto" in script
+        assert "merged.lang = merged.lang || 'zh-CN';" in script
+        assert "typographyConfig.cjkFont" in script
 
 
 class TestThemeValidation:

@@ -123,6 +123,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     openssl \
     libreoffice \
+    fonts-noto-cjk \
     libglib2.0-0 \
     libsm6 \
     libxrender1 \
