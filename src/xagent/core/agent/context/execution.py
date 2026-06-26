@@ -303,6 +303,10 @@ class ExecutionContext:
 
         for message in visible_messages:
             message_dict = message.to_dict()
+            if message.role == "assistant":
+                provider_state = message.metadata.get("_xagent_provider_state")
+                if isinstance(provider_state, dict):
+                    message_dict["_xagent_provider_state"] = provider_state
             waiting_response = message.metadata.get("response_to_waiting_for_user")
             if message_dict.get("role") == "user" and isinstance(
                 waiting_response, dict

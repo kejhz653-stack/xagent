@@ -979,6 +979,57 @@ def test_get_messages_for_llm_preserves_tool_call_pair_without_ids() -> None:
     assert [message["role"] for message in messages[1:]] == ["assistant", "tool"]
 
 
+def test_get_messages_for_llm_projects_internal_xagent_metadata() -> None:
+    ctx = ExecutionContext()
+    ctx.add_assistant_message(
+        "",
+        tool_calls=[
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            },
+        ],
+        metadata={
+            "_xagent_provider_state": {"provider": {"field": ""}},
+            "non_internal": "ignored",
+        },
+    )
+    ctx.add_tool_result("read_file", {"output": "x"}, tool_call_id="call-1")
+
+    messages = ctx.get_messages_for_llm()
+
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["_xagent_provider_state"] == {"provider": {"field": ""}}
+    assert "non_internal" not in messages[1]
+    assert "metadata" not in messages[1]
+
+
+def test_context_serialization_preserves_internal_xagent_metadata() -> None:
+    ctx = ExecutionContext()
+    ctx.add_assistant_message(
+        "",
+        tool_calls=[
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{}"},
+            },
+        ],
+        metadata={"_xagent_provider_state": {"provider": {"field": ""}}},
+    )
+    ctx.add_tool_result("read_file", {"output": "x"}, tool_call_id="call-1")
+
+    restored = ExecutionContext.from_dict(ctx.to_dict())
+
+    assert restored.messages[0].metadata["_xagent_provider_state"] == {
+        "provider": {"field": ""}
+    }
+    assert restored.get_messages_for_llm(include_system=False)[0][
+        "_xagent_provider_state"
+    ] == {"provider": {"field": ""}}
+
+
 def test_compact_disabled() -> None:
     ctx = ExecutionContext()
     ctx.compact_config.enabled = False

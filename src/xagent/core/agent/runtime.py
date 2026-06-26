@@ -143,6 +143,7 @@ class PatternRuntime:
             content_parts: list[str] = []
             tool_call_chunks: dict[int, dict[str, Any]] = {}
             usage_payload: dict[str, Any] = {}
+            provider_payload: dict[str, Any] = {}
             saw_payload_chunk = False
             async for chunk in stream_chat(**kwargs):
                 await self._raise_if_interrupted("interrupted during LLM stream")
@@ -158,6 +159,7 @@ class PatternRuntime:
                 chunk_usage = self._chunk_usage(chunk)
                 if chunk_usage:
                     self._merge_usage(usage_payload, chunk_usage)
+                self._merge_provider_payload(provider_payload, chunk)
                 if on_chunk is not None:
                     await self._maybe_await(on_chunk(chunk))
 
@@ -172,14 +174,21 @@ class PatternRuntime:
                 }
                 if usage_payload:
                     response["usage"] = usage_payload
+                if provider_payload:
+                    response.update(provider_payload)
                 return response
             if not saw_payload_chunk:
                 return await self.run_llm_call(llm, **kwargs)
             if usage_payload:
-                return {
+                response = {
                     "content": content,
                     "usage": usage_payload,
                 }
+                if provider_payload:
+                    response.update(provider_payload)
+                return response
+            if provider_payload:
+                return {"content": content, **provider_payload}
             return content
 
         task: asyncio.Future[Any] = asyncio.ensure_future(consume_stream())
@@ -260,6 +269,24 @@ class PatternRuntime:
                 current[key] = int(value)
             elif value is not None:
                 current[key] = value
+
+    def _merge_provider_payload(
+        self,
+        current: dict[str, Any],
+        chunk: Any,
+    ) -> None:
+        raw = getattr(chunk, "raw", None)
+        model_dump = getattr(raw, "model_dump", None)
+        if callable(model_dump):
+            raw = model_dump()
+        if not isinstance(raw, dict):
+            return
+        for key in ("reasoning_content", "reasoning"):
+            if key in raw and raw[key] is not None:
+                current[key] = raw[key]
+        provider_state = raw.get("_xagent_provider_state")
+        if isinstance(provider_state, dict):
+            current["_xagent_provider_state"] = provider_state
 
     def _merge_tool_call_chunks(
         self,

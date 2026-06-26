@@ -7,7 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from xagent.core.model.chat.basic.openai import OpenAILLM, _format_openai_error
+from xagent.core.model.chat.basic.openai import (
+    PROVIDER_STATE_METADATA_KEY,
+    OpenAILLM,
+    _format_openai_error,
+)
 from xagent.core.model.chat.exceptions import LLMRetryableError
 
 
@@ -103,7 +107,6 @@ class TestOpenAILLM:
         assert isinstance(response, dict)
         assert response.get("type") == "tool_call"
         assert "tool_calls" in response
-
         tool_calls = response["tool_calls"]
         assert len(tool_calls) > 0
         assert tool_calls[0]["function"]["name"] == "get_weather"
@@ -196,6 +199,84 @@ class TestOpenAILLM:
                 },
             },
         ]
+
+    @pytest.mark.asyncio
+    async def test_tool_calling_preserves_empty_reasoning_content(
+        self, openai_llm_config, mocker
+    ):
+        tool_call = MagicMock()
+        tool_call.id = "call_1"
+        tool_call.type = "function"
+        tool_call.function.name = "search"
+        tool_call.function.arguments = '{"query":"xagent"}'
+
+        mock_message = MagicMock()
+        mock_message.content = None
+        mock_message.tool_calls = [tool_call]
+        mock_message.reasoning_content = ""
+
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.usage = None
+        mock_response.model_dump.return_value = {"id": "tool-response"}
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        llm = OpenAILLM(**openai_llm_config)
+        response = await llm.chat(
+            [{"role": "user", "content": "Search"}],
+            tools=[{}],
+        )
+
+        assert response["type"] == "tool_call"
+        assert response["reasoning_content"] == ""
+        assert response["reasoning"] == ""
+
+    @pytest.mark.asyncio
+    async def test_internal_xagent_message_keys_are_stripped(
+        self, llm, mock_chat_completion, mocker
+    ):
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        await llm.chat(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    PROVIDER_STATE_METADATA_KEY: {
+                        "deepseek": {"reasoning_content": ""}
+                    },
+                    "_xagent_private": "internal",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "search",
+                                "arguments": '{"query":"xagent"}',
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        assert PROVIDER_STATE_METADATA_KEY not in call_messages[0]
+        assert "_xagent_private" not in call_messages[0]
+        assert "reasoning_content" not in call_messages[0]
 
     @pytest.mark.asyncio
     async def test_json_mode(self, llm, mock_json_completion, mocker):

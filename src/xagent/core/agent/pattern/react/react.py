@@ -423,12 +423,16 @@ class ReActPattern(AgentPattern):
             assistant_content = normalized.get("content")
             tool_calls = normalized.get("tool_calls", [])
             if assistant_content is not None or normalized.get("tool_calls"):
+                metadata = (
+                    self._provider_state_for_context(normalized) if tool_calls else {}
+                )
                 context.add_assistant_message(
                     assistant_content or "",
                     tool_calls=[
                         self._tool_call_for_context(tool_call)
                         for tool_call in tool_calls
                     ],
+                    **({"metadata": metadata} if metadata else {}),
                 )
 
             if answer_streamer is not None:
@@ -815,6 +819,21 @@ class ReActPattern(AgentPattern):
             "done": bool(done),
             "raw": response,
         }
+
+    def _provider_state_for_context(
+        self, normalized_response: dict[str, Any]
+    ) -> dict[str, Any]:
+        raw = normalized_response.get("raw")
+        marker_key = "_xagent_provider_state"
+        if isinstance(raw, dict):
+            raw_provider_state = raw.get(marker_key)
+            if isinstance(raw_provider_state, dict):
+                return {marker_key: raw_provider_state}
+        if marker_key in normalized_response and isinstance(
+            normalized_response[marker_key], dict
+        ):
+            return {marker_key: normalized_response[marker_key]}
+        return {}
 
     def _normalize_tool_calls(self, tool_calls: list[Any]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []

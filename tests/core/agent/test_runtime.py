@@ -93,6 +93,34 @@ class StreamingToolDeltaLLM:
         yield StreamChunk(type=ChunkType.END)
 
 
+class StreamingToolDeltaWithReasoningLLM:
+    async def stream_chat(self, **_: Any) -> Any:
+        yield StreamChunk(
+            type=ChunkType.TOOL_CALL,
+            tool_calls=[
+                {
+                    "index": 0,
+                    "id": "call-1",
+                    "function": {
+                        "name": "calculator",
+                        "arguments": '{"expression":"2 + 2"}',
+                    },
+                }
+            ],
+            raw={
+                "reasoning_content": "",
+                "_xagent_provider_state": {"provider": {"field": ""}},
+            },
+        )
+        yield StreamChunk(
+            type=ChunkType.END,
+            raw={
+                "reasoning_content": "",
+                "_xagent_provider_state": {"provider": {"field": ""}},
+            },
+        )
+
+
 class StreamingFinalAnswerToolDeltaLLM:
     async def stream_chat(self, **_: Any) -> Any:
         for arguments in ['{"action":"final_answer"', ',"answer":"Hi', ' there"}']:
@@ -383,6 +411,21 @@ async def test_runtime_streaming_llm_call_merges_tool_call_argument_deltas() -> 
             }
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_runtime_streaming_llm_call_preserves_empty_reasoning_content() -> None:
+    runtime = PatternRuntime()
+
+    result = await runtime.run_streaming_llm_call(
+        StreamingToolDeltaWithReasoningLLM(),
+        messages=[],
+        tools=[],
+    )
+
+    assert result["tool_calls"][0]["function"]["name"] == "calculator"
+    assert result["reasoning_content"] == ""
+    assert result["_xagent_provider_state"] == {"provider": {"field": ""}}
 
 
 @pytest.mark.asyncio

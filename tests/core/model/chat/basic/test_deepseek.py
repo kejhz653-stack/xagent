@@ -4,8 +4,11 @@ import pytest
 
 from xagent.core.model.chat.basic.deepseek import (
     DEEPSEEK_DEFAULT_BASE_URL,
+    DEEPSEEK_PROVIDER_STATE_NAMESPACE,
+    DEEPSEEK_REASONING_CONTENT_STATE_KEY,
     DeepSeekLLM,
 )
+from xagent.core.model.chat.basic.openai import PROVIDER_STATE_METADATA_KEY, OpenAILLM
 from xagent.core.model.chat.types import ChunkType
 
 
@@ -66,6 +69,9 @@ class TestDeepSeekLLM:
     def test_structured_output_capabilities(self, llm):
         assert llm.supports_json_schema_response_format is False
         assert llm.supports_json_object_response_format is True
+
+    def test_deepseek_is_not_openai_subclass(self):
+        assert not issubclass(DeepSeekLLM, OpenAILLM)
 
     @pytest.mark.asyncio
     async def test_explicit_thinking_enabled_uses_deepseek_extra_body(
@@ -431,6 +437,296 @@ class TestDeepSeekLLM:
         assert result["type"] == "tool_call"
         assert result["reasoning_content"] == "Use the search tool first"
         assert result["reasoning"] == "Use the search tool first"
+        assert result[PROVIDER_STATE_METADATA_KEY] == {
+            DEEPSEEK_PROVIDER_STATE_NAMESPACE: {
+                DEEPSEEK_REASONING_CONTENT_STATE_KEY: "Use the search tool first"
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_empty_reasoning_content_is_preserved_for_tool_calls(
+        self, llm, mocker
+    ):
+        tool_call = SimpleNamespace(
+            id="call_1",
+            type="function",
+            function=SimpleNamespace(name="search", arguments='{"query":"xagent"}'),
+        )
+        message = SimpleNamespace(
+            content=None,
+            tool_calls=[tool_call],
+            reasoning_content="",
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=None,
+            model_dump=lambda: {"id": "deepseek-tool"},
+        )
+
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = response
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+
+        result = await llm.chat(
+            [{"role": "user", "content": "Search xagent"}],
+            tools=[{}],
+            thinking={"type": "enabled"},
+        )
+
+        assert result["type"] == "tool_call"
+        assert result["reasoning_content"] == ""
+        assert result["reasoning"] == ""
+        assert result[PROVIDER_STATE_METADATA_KEY] == {
+            DEEPSEEK_PROVIDER_STATE_NAMESPACE: {
+                DEEPSEEK_REASONING_CONTENT_STATE_KEY: ""
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_assistant_tool_call_replays_empty_reasoning_content(
+        self, llm, mock_chat_completion, mocker
+    ):
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+        messages = [
+            {"role": "user", "content": "Search xagent"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"query":"xagent"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Tool search returned: {}",
+            },
+        ]
+
+        await llm.chat(messages, tools=[{}])
+
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        assert call_messages[1]["reasoning_content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_thinking_enabled_preserves_existing_empty_reasoning_content(
+        self, llm, mock_chat_completion, mocker
+    ):
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"query":"xagent"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Tool search returned: {}",
+            },
+        ]
+
+        await llm.chat(messages, tools=[{}], thinking={"type": "enabled"})
+
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        assert call_messages[0]["reasoning_content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_converts_provider_state_to_reasoning_content(
+        self, llm, mock_chat_completion, mocker
+    ):
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                PROVIDER_STATE_METADATA_KEY: {
+                    DEEPSEEK_PROVIDER_STATE_NAMESPACE: {
+                        DEEPSEEK_REASONING_CONTENT_STATE_KEY: ""
+                    }
+                },
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"query":"xagent"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Tool search returned: {}",
+            },
+        ]
+
+        await llm.chat(messages, tools=[{}])
+
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        assert call_messages[0]["reasoning_content"] == ""
+        assert PROVIDER_STATE_METADATA_KEY not in call_messages[0]
+
+    @pytest.mark.asyncio
+    async def test_converts_real_provider_state_to_reasoning_content(
+        self, llm, mock_chat_completion, mocker
+    ):
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                PROVIDER_STATE_METADATA_KEY: {
+                    DEEPSEEK_PROVIDER_STATE_NAMESPACE: {
+                        DEEPSEEK_REASONING_CONTENT_STATE_KEY: (
+                            "I should inspect available files first."
+                        )
+                    }
+                },
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"query":"xagent"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Tool search returned: {}",
+            },
+        ]
+
+        await llm.chat(messages)
+
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        assert (
+            call_messages[0]["reasoning_content"]
+            == "I should inspect available files first."
+        )
+        assert PROVIDER_STATE_METADATA_KEY not in call_messages[0]
+
+    @pytest.mark.asyncio
+    async def test_thinking_disabled_still_replays_empty_reasoning_content(
+        self, llm, mock_tool_call_completion, mocker
+    ):
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_tool_call_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"query":"xagent"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Tool search returned: {}",
+            },
+        ]
+
+        await llm.chat(messages, tools=[{}], thinking={"type": "disabled"})
+
+        call_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        assert call_messages[0]["reasoning_content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_final_answer_call_replays_empty_reasoning_content_without_tools(
+        self, llm, mock_chat_completion, mocker
+    ):
+        mock_client = mocker.AsyncMock()
+        mock_client.chat.completions.create.return_value = mock_chat_completion
+        mocker.patch(
+            "xagent.core.model.chat.basic.openai.AsyncOpenAI",
+            return_value=mock_client,
+        )
+        messages = [
+            {"role": "user", "content": "Hi, what can you do?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "list_all_user_files",
+                            "arguments": '{"limit":10}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "Tool list_all_user_files returned: {}",
+            },
+        ]
+
+        await llm.chat(messages)
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert "tools" not in call_kwargs
+        assert call_kwargs["messages"][1]["reasoning_content"] == ""
 
     @pytest.mark.asyncio
     async def test_stream_reasoning_content_is_accumulated_without_token_output(

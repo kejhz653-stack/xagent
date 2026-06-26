@@ -4,11 +4,13 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from ...providers import is_placeholder_api_key
 from .base import StreamChunk
-from .openai import OpenAILLM
+from .openai import PROVIDER_STATE_METADATA_KEY, OpenAICompatibleLLM
 
 logger = logging.getLogger(__name__)
 
 DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_PROVIDER_STATE_NAMESPACE = "deepseek"
+DEEPSEEK_REASONING_CONTENT_STATE_KEY = "reasoning_content"
 DEEPSEEK_SUPPORTED_MODELS = (
     "deepseek-v4-flash",
     "deepseek-v4-pro",
@@ -45,7 +47,7 @@ def resolve_deepseek_api_key(api_key: Optional[str] = None) -> str:
     return resolved_api_key or ""
 
 
-class DeepSeekLLM(OpenAILLM):
+class DeepSeekLLM(OpenAICompatibleLLM):
     """DeepSeek v4 client using the OpenAI SDK with DeepSeek-specific options."""
 
     def __init__(
@@ -145,6 +147,74 @@ class DeepSeekLLM(OpenAILLM):
 
         return extra_body, updated_kwargs
 
+    def _prepare_messages_for_request(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        thinking: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Preserve DeepSeek thinking metadata on assistant tool-call history.
+
+        DeepSeek V4 requires assistant messages in a tool-call chain to replay
+        the exact ``reasoning_content`` returned by the provider. An explicit
+        empty string is semantically different from a missing field, so this
+        must use key presence rather than truthiness. If older context lacks
+        captured provider state, use an empty string fallback to keep assistant
+        tool-call history structurally valid for later DeepSeek requests.
+        """
+        prepared: List[Dict[str, Any]] = []
+        for message in messages:
+            prepared_message = dict(message)
+            provider_state = prepared_message.get(PROVIDER_STATE_METADATA_KEY)
+            if isinstance(provider_state, dict):
+                deepseek_metadata = provider_state.get(
+                    DEEPSEEK_PROVIDER_STATE_NAMESPACE
+                )
+                if (
+                    isinstance(deepseek_metadata, dict)
+                    and DEEPSEEK_REASONING_CONTENT_STATE_KEY in deepseek_metadata
+                ):
+                    prepared_message["reasoning_content"] = deepseek_metadata[
+                        DEEPSEEK_REASONING_CONTENT_STATE_KEY
+                    ]
+            if (
+                prepared_message.get("role") == "assistant"
+                and prepared_message.get("tool_calls")
+                and "reasoning_content" not in prepared_message
+            ):
+                prepared_message["reasoning_content"] = ""
+            prepared.append(prepared_message)
+        return prepared
+
+    def _response_provider_state(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        if "reasoning_content" not in result:
+            return {}
+        return {
+            DEEPSEEK_PROVIDER_STATE_NAMESPACE: {
+                DEEPSEEK_REASONING_CONTENT_STATE_KEY: result["reasoning_content"],
+            },
+        }
+
+    def _attach_reasoning_content_to_raw(
+        self,
+        raw_payload: Any,
+        reasoning_content: str,
+        *,
+        has_reasoning_content: bool = False,
+    ) -> Any:
+        raw_payload = super()._attach_reasoning_content_to_raw(
+            raw_payload,
+            reasoning_content,
+            has_reasoning_content=has_reasoning_content,
+        )
+        if has_reasoning_content and isinstance(raw_payload, dict):
+            raw_payload[PROVIDER_STATE_METADATA_KEY] = {
+                DEEPSEEK_PROVIDER_STATE_NAMESPACE: {
+                    DEEPSEEK_REASONING_CONTENT_STATE_KEY: reasoning_content,
+                },
+            }
+        return raw_payload
+
     def _normalize_response_format(
         self,
         response_format: Optional[Dict[str, Any]],
@@ -203,7 +273,7 @@ class DeepSeekLLM(OpenAILLM):
             tools=tools,
             tool_choice=tool_choice,
             response_format=response_format,
-            thinking=None,
+            thinking=thinking,
             output_config=output_config,
             extra_body=extra_body,
             **kwargs,
@@ -239,7 +309,7 @@ class DeepSeekLLM(OpenAILLM):
             tools=tools,
             tool_choice=tool_choice,
             response_format=response_format,
-            thinking=None,
+            thinking=thinking,
             output_config=output_config,
             extra_body=extra_body,
             **kwargs,

@@ -16,6 +16,8 @@ from .base import BaseLLM
 
 logger = logging.getLogger(__name__)
 
+PROVIDER_STATE_METADATA_KEY = "_xagent_provider_state"
+
 
 def _truncate_error_detail(value: Any, limit: int = 4000) -> str:
     text = (
@@ -79,6 +81,32 @@ def _format_openai_error(prefix: str, error: BaseException) -> str:
     return formatted
 
 
+def _message_reasoning_content(message: Any) -> tuple[bool, Any]:
+    """Return whether a provider explicitly included reasoning content."""
+    if isinstance(message, dict):
+        if "reasoning_content" not in message:
+            return False, None
+        value = message.get("reasoning_content")
+        return value is not None, value
+
+    model_fields_set = getattr(message, "model_fields_set", None)
+    if isinstance(model_fields_set, set) and "reasoning_content" in model_fields_set:
+        value = getattr(message, "reasoning_content", None)
+        return value is not None, value
+
+    model_extra = getattr(message, "model_extra", None)
+    if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
+        value = model_extra.get("reasoning_content")
+        return value is not None, value
+
+    message_attrs = getattr(message, "__dict__", {})
+    if not isinstance(message_attrs, dict) or "reasoning_content" not in message_attrs:
+        return False, None
+
+    value = message_attrs["reasoning_content"]
+    return value is not None, value
+
+
 def _is_retryable_stream_transport_error(error: BaseException) -> bool:
     retryable_messages = (
         "peer closed connection",
@@ -109,17 +137,21 @@ def _is_retryable_stream_transport_error(error: BaseException) -> bool:
     return False
 
 
-class OpenAILLM(BaseLLM):
+class OpenAICompatibleLLM(BaseLLM):
     """
-    OpenAI LLM client using the official OpenAI SDK.
-    Supports custom endpoints (e.g., Xinference) and all OpenAI API features.
+    Internal OpenAI-compatible chat client using the official OpenAI SDK.
+
+    This base owns transport, streaming assembly, usage accounting, tool-call
+    parsing, and retry/error handling. Provider classes layer policy on top:
+    environment defaults, structured-output translation, thinking parameters,
+    vision support, and model listing.
     """
 
     def __init__(
         self,
-        model_name: str = "gpt-4o-mini",
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        model_name: str,
+        base_url: Optional[str],
+        api_key: Optional[str],
         default_temperature: Optional[float] = None,
         default_max_tokens: Optional[int] = None,
         timeout: float = 180.0,
@@ -127,10 +159,8 @@ class OpenAILLM(BaseLLM):
         timeout_config: Optional[TimeoutConfig] = None,
     ):
         self._model_name = model_name
-        self.base_url = (
-            base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
-        ).rstrip("/")
-        self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY")
+        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.api_key = api_key
         self.default_temperature = default_temperature
         self.default_max_tokens = default_max_tokens
         self.timeout = timeout
@@ -169,6 +199,59 @@ class OpenAILLM(BaseLLM):
     def _prepare_extra_body(self, extra_body: Dict[str, Any]) -> Dict[str, Any]:
         """Hook for OpenAI-compatible subclasses to customize extra_body."""
         return extra_body
+
+    def _prepare_messages_for_request(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        thinking: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return provider-ready messages before shared sanitization."""
+        _ = thinking
+        return messages
+
+    def _response_provider_state(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Return opaque provider-owned message state for future LLM requests."""
+        _ = result
+        return {}
+
+    def _strip_internal_message_keys(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Remove Xagent-only message metadata before sending provider calls."""
+        sanitized: List[Dict[str, Any]] = []
+        for message in messages:
+            sanitized.append(
+                {
+                    key: value
+                    for key, value in message.items()
+                    if not key.startswith("_xagent_")
+                }
+            )
+        return sanitized
+
+    def _build_request_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        thinking: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        prepared = self._prepare_messages_for_request(messages, thinking=thinking)
+        sanitized_messages: List[Dict[str, Any]] = self._sanitize_unicode_content(
+            self._strip_internal_message_keys(prepared)
+        )
+        return sanitized_messages
+
+    def _apply_output_config(
+        self,
+        completion_params: Dict[str, Any],
+        output_config: Optional[Dict[str, Any]],
+    ) -> None:
+        """Apply provider-specific structured-output request policy."""
+        if output_config is None:
+            return
+
+        completion_params["output_config"] = output_config
 
     async def chat(
         self,
@@ -211,7 +294,7 @@ class OpenAILLM(BaseLLM):
         # Prepare the completion parameters
         completion_params = {
             "model": self._model_name,
-            "messages": self._sanitize_unicode_content(messages),
+            "messages": self._build_request_messages(messages, thinking=thinking),
             **kwargs,
         }
 
@@ -235,28 +318,7 @@ class OpenAILLM(BaseLLM):
         if response_format:
             completion_params["response_format"] = response_format
 
-        # Handle output_config for structured outputs (JSON schema)
-        if output_config is not None:
-            # For OpenAI, we can pass output_config directly or convert to response_format
-            # if it's using json_schema format
-            format_config = output_config.get("format", {})
-            if format_config.get("type") == "json_schema":
-                # OpenAI supports json_schema through response_format
-                # Convert to OpenAI's official format: {"type": "json_schema", "json_schema": {"name": ..., "strict": True, "schema": ...}}
-                schema = format_config.get("schema", {})
-                completion_params["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema.get("title", "response")
-                        .lower()
-                        .replace(" ", "_"),
-                        "strict": True,
-                        "schema": schema,
-                    },
-                }
-            else:
-                # Pass through other output_config formats
-                completion_params["output_config"] = output_config
+        self._apply_output_config(completion_params, output_config)
 
         # Handle thinking mode using extra_body as specified in the requirements
         # Only add enable_thinking if the client supports this parameter (e.g., standard OpenAI)
@@ -357,17 +419,21 @@ class OpenAILLM(BaseLLM):
                     "tool_calls": tool_calls,
                     "raw": resp.model_dump(),
                 }
-                if hasattr(message, "reasoning_content") and message.reasoning_content:
-                    result["reasoning_content"] = message.reasoning_content
-                    result["reasoning"] = message.reasoning_content
+                has_reasoning_content, reasoning_content = _message_reasoning_content(
+                    message
+                )
+                if has_reasoning_content:
+                    result["reasoning_content"] = reasoning_content
+                    result["reasoning"] = reasoning_content
+                provider_state = self._response_provider_state(result)
+                if provider_state:
+                    result[PROVIDER_STATE_METADATA_KEY] = provider_state
                 return result
 
             # Handle text content
             content = message.content
-            reasoning_content = (
-                message.reasoning_content
-                if hasattr(message, "reasoning_content")
-                else None
+            has_reasoning_content, reasoning_content = _message_reasoning_content(
+                message
             )
             finish_reason = getattr(choice, "finish_reason", None)
 
@@ -413,7 +479,7 @@ class OpenAILLM(BaseLLM):
                 "content": content,
                 "raw": resp.model_dump(),
             }
-            if reasoning_content:
+            if has_reasoning_content:
                 result["reasoning_content"] = reasoning_content
                 result["reasoning"] = reasoning_content
             return result
@@ -435,7 +501,8 @@ class OpenAILLM(BaseLLM):
             ):
                 message = response.choices[0].message
                 # Check if response has reasoning_content (indicates thinking was active)
-                if hasattr(message, "reasoning_content") and message.reasoning_content:
+                has_reasoning_content, _ = _message_reasoning_content(message)
+                if has_reasoning_content:
                     content = result.get("content", "")
                     # Try to parse as JSON
                     try:
@@ -525,10 +592,14 @@ class OpenAILLM(BaseLLM):
         return updated_extra_body
 
     def _attach_reasoning_content_to_raw(
-        self, raw_payload: Any, reasoning_content: str
+        self,
+        raw_payload: Any,
+        reasoning_content: str,
+        *,
+        has_reasoning_content: bool = False,
     ) -> Any:
         """Attach accumulated reasoning content to a raw payload when possible."""
-        if not reasoning_content:
+        if not has_reasoning_content:
             return raw_payload
 
         if hasattr(raw_payload, "model_dump"):
@@ -588,7 +659,7 @@ class OpenAILLM(BaseLLM):
         # Prepare the completion parameters
         completion_params = {
             "model": self._model_name,
-            "messages": self._sanitize_unicode_content(messages),
+            "messages": self._build_request_messages(messages, thinking=thinking),
             **kwargs,
         }
 
@@ -610,28 +681,7 @@ class OpenAILLM(BaseLLM):
         if response_format:
             completion_params["response_format"] = response_format
 
-        # Handle output_config for structured outputs (JSON schema)
-        if output_config is not None:
-            # For OpenAI, we can pass output_config directly or convert to response_format
-            # if it's using json_schema format
-            format_config = output_config.get("format", {})
-            if format_config.get("type") == "json_schema":
-                # OpenAI supports json_schema through response_format
-                # Convert to OpenAI's official format: {"type": "json_schema", "json_schema": {"name": ..., "strict": True, "schema": ...}}
-                schema = format_config.get("schema", {})
-                completion_params["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema.get("title", "response")
-                        .lower()
-                        .replace(" ", "_"),
-                        "strict": True,
-                        "schema": schema,
-                    },
-                }
-            else:
-                # Pass through other output_config formats
-                completion_params["output_config"] = output_config
+        self._apply_output_config(completion_params, output_config)
 
         # Check if this is a thinking-only model (only supports thinking_mode, not chat)
         is_thinking_only = (
@@ -729,18 +779,26 @@ class OpenAILLM(BaseLLM):
                             }
                         )
 
-                return {
+                result = {
                     "type": "tool_call",
                     "tool_calls": tool_calls,
                     "raw": response.model_dump(),
                 }
+                has_reasoning_content, reasoning_content = _message_reasoning_content(
+                    message
+                )
+                if has_reasoning_content:
+                    result["reasoning_content"] = reasoning_content
+                    result["reasoning"] = reasoning_content
+                provider_state = self._response_provider_state(result)
+                if provider_state:
+                    result[PROVIDER_STATE_METADATA_KEY] = provider_state
+                return result
 
             # Handle text content
             content = message.content
-            reasoning_content = (
-                message.reasoning_content
-                if hasattr(message, "reasoning_content")
-                else None
+            has_reasoning_content, reasoning_content = _message_reasoning_content(
+                message
             )
             finish_reason = getattr(choice, "finish_reason", None)
 
@@ -773,15 +831,15 @@ class OpenAILLM(BaseLLM):
                     f"LLM returned {'empty' if content == '' else 'None'} content and no tool calls"
                 )
 
-            result: Dict[str, Any] = {
+            text_result: Dict[str, Any] = {
                 "type": "text",
                 "content": content,
                 "raw": response.model_dump(),
             }
-            if reasoning_content:
-                result["reasoning_content"] = reasoning_content
-                result["reasoning"] = reasoning_content
-            return result
+            if has_reasoning_content:
+                text_result["reasoning_content"] = reasoning_content
+                text_result["reasoning"] = reasoning_content
+            return text_result
 
         except openai.APITimeoutError as e:
             # Handle timeout errors
@@ -872,7 +930,7 @@ class OpenAILLM(BaseLLM):
         # Prepare completion parameters
         completion_params = {
             "model": self._model_name,
-            "messages": self._sanitize_unicode_content(messages),
+            "messages": self._build_request_messages(messages, thinking=thinking),
             "stream": True,
             "stream_options": {"include_usage": True},
             **kwargs,
@@ -898,28 +956,7 @@ class OpenAILLM(BaseLLM):
         if response_format:
             completion_params["response_format"] = response_format
 
-        # Handle output_config for structured outputs (JSON schema)
-        if output_config is not None:
-            # For OpenAI, we can pass output_config directly or convert to response_format
-            # if it's using json_schema format
-            format_config = output_config.get("format", {})
-            if format_config.get("type") == "json_schema":
-                # OpenAI supports json_schema through response_format
-                # Convert to OpenAI's official format: {"type": "json_schema", "json_schema": {"name": ..., "strict": True, "schema": ...}}
-                schema = format_config.get("schema", {})
-                completion_params["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema.get("title", "response")
-                        .lower()
-                        .replace(" ", "_"),
-                        "strict": True,
-                        "schema": schema,
-                    },
-                }
-            else:
-                # Pass through other output_config formats
-                completion_params["output_config"] = output_config
+        self._apply_output_config(completion_params, output_config)
 
         # Handle thinking mode
         is_thinking_only = (
@@ -991,6 +1028,7 @@ class OpenAILLM(BaseLLM):
             # Accumulate tool calls (across multiple chunks)
             accumulated_tool_calls: Dict[str, Dict] = {}
             accumulated_reasoning_content = ""
+            has_reasoning_content = False
             last_raw_chunk = None  # Track last raw chunk for usage extraction
             usage_received = False
 
@@ -1025,13 +1063,20 @@ class OpenAILLM(BaseLLM):
                 # Parse chunk
                 if hasattr(raw_chunk, "choices") and raw_chunk.choices:
                     delta = raw_chunk.choices[0].delta
-                    if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                        accumulated_reasoning_content += delta.reasoning_content
+                    delta_has_reasoning, delta_reasoning_content = (
+                        _message_reasoning_content(delta)
+                    )
+                    if delta_has_reasoning:
+                        has_reasoning_content = True
+                        accumulated_reasoning_content += str(
+                            delta_reasoning_content or ""
+                        )
 
                 chunk = self._parse_stream_chunk(
                     raw_chunk,
                     accumulated_tool_calls,
                     accumulated_reasoning_content,
+                    has_reasoning_content=has_reasoning_content,
                 )
                 if chunk:
                     if chunk.is_usage():
@@ -1122,6 +1167,8 @@ class OpenAILLM(BaseLLM):
         raw_chunk: Any,
         accumulated_tool_calls: Dict,
         accumulated_reasoning_content: str = "",
+        *,
+        has_reasoning_content: bool = False,
     ) -> Optional[StreamChunk]:
         """
         Parse OpenAI streaming chunk
@@ -1166,7 +1213,9 @@ class OpenAILLM(BaseLLM):
                 content=delta.content,
                 delta=delta.content,
                 raw=self._attach_reasoning_content_to_raw(
-                    raw_chunk, accumulated_reasoning_content
+                    raw_chunk,
+                    accumulated_reasoning_content,
+                    has_reasoning_content=has_reasoning_content,
                 ),
             )
 
@@ -1240,7 +1289,9 @@ class OpenAILLM(BaseLLM):
                     type=ChunkType.TOOL_CALL,
                     tool_calls=tool_calls_list,
                     raw=self._attach_reasoning_content_to_raw(
-                        raw_chunk, accumulated_reasoning_content
+                        raw_chunk,
+                        accumulated_reasoning_content,
+                        has_reasoning_content=has_reasoning_content,
                     ),
                 )
 
@@ -1267,7 +1318,9 @@ class OpenAILLM(BaseLLM):
                     tool_calls=tool_calls_list,
                     finish_reason=choice.finish_reason,
                     raw=self._attach_reasoning_content_to_raw(
-                        raw_chunk, accumulated_reasoning_content
+                        raw_chunk,
+                        accumulated_reasoning_content,
+                        has_reasoning_content=has_reasoning_content,
                     ),
                 )
 
@@ -1275,7 +1328,9 @@ class OpenAILLM(BaseLLM):
                 type=ChunkType.END,
                 finish_reason=choice.finish_reason,
                 raw=self._attach_reasoning_content_to_raw(
-                    raw_chunk, accumulated_reasoning_content
+                    raw_chunk,
+                    accumulated_reasoning_content,
+                    has_reasoning_content=has_reasoning_content,
                 ),
             )
 
@@ -1300,7 +1355,7 @@ class OpenAILLM(BaseLLM):
             await self._client.close()
             self._client = None
 
-    async def __aenter__(self) -> "OpenAILLM":
+    async def __aenter__(self) -> "OpenAICompatibleLLM":
         """Async context manager entry."""
         return self
 
@@ -1373,3 +1428,59 @@ class OpenAILLM(BaseLLM):
             return []
         finally:
             await client.close()
+
+
+class OpenAILLM(OpenAICompatibleLLM):
+    """
+    OpenAI LLM client using the official OpenAI SDK.
+
+    This public provider class owns OpenAI defaults and request policy while
+    inheriting OpenAI-compatible transport/parsing from ``OpenAICompatibleLLM``.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "gpt-4o-mini",
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        default_temperature: Optional[float] = None,
+        default_max_tokens: Optional[int] = None,
+        timeout: float = 180.0,
+        abilities: Optional[List[str]] = None,
+        timeout_config: Optional[TimeoutConfig] = None,
+    ):
+        super().__init__(
+            model_name=model_name,
+            base_url=(
+                base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+            ),
+            api_key=api_key if api_key is not None else os.getenv("OPENAI_API_KEY"),
+            default_temperature=default_temperature,
+            default_max_tokens=default_max_tokens,
+            timeout=timeout,
+            abilities=abilities,
+            timeout_config=timeout_config,
+        )
+
+    def _apply_output_config(
+        self,
+        completion_params: Dict[str, Any],
+        output_config: Optional[Dict[str, Any]],
+    ) -> None:
+        if output_config is None:
+            return
+
+        format_config = output_config.get("format", {})
+        if format_config.get("type") == "json_schema":
+            schema = format_config.get("schema", {})
+            completion_params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema.get("title", "response").lower().replace(" ", "_"),
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+            return
+
+        completion_params["output_config"] = output_config

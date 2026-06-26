@@ -577,6 +577,51 @@ async def test_react_pattern_runs_tool_call_then_final_answer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_react_pattern_carries_opaque_provider_state() -> None:
+    provider_state = {"provider": {"field": ""}}
+    llm = FakeLLM(
+        responses=[
+            {
+                "content": "",
+                "_xagent_provider_state": provider_state,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "calculator",
+                            "arguments": '{"expression":"2+2"}',
+                        },
+                    }
+                ],
+                "done": False,
+            },
+            {"content": "The result is 4.", "done": True},
+        ]
+    )
+    pattern = ReActPattern(max_iterations=3)
+    tool = FakeTool()
+    context = ExecutionContext()
+    context.add_user_message("Calculate 2+2")
+
+    result = await pattern.run(context=context, tools=[tool], llm=llm)
+
+    assert result["success"] is True
+    assistant_messages = [
+        message
+        for message in llm.calls[1]["messages"]
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    ]
+    assert assistant_messages[0]["_xagent_provider_state"] == provider_state
+    assert "reasoning_content" not in assistant_messages[0]
+    stored_assistant = next(
+        message
+        for message in context.messages
+        if message.role == "assistant" and message.tool_calls
+    )
+    assert stored_assistant.metadata["_xagent_provider_state"] == provider_state
+
+
+@pytest.mark.asyncio
 async def test_react_pattern_does_not_persist_invalid_raw_tool_calls() -> None:
     llm = FakeLLM(
         responses=[
