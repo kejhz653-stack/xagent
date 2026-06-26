@@ -1247,7 +1247,7 @@ const getTextOptions = (text, options = {{}}, role = 'body') => {{
 
   if (containsCjk(text)) {{
     merged.lang = merged.lang || 'zh-CN';
-    if (typographyConfig.cjkFont) {{
+    if (typographyConfig.cjkFont && !options.fontFace) {{
       merged.fontFace = typographyConfig.cjkFont;
     }}
   }}

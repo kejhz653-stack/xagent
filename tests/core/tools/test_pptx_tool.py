@@ -130,6 +130,7 @@ class TestPresentationGeneratorRuntime:
         assert "const addTextAuto" in script
         assert "merged.lang = merged.lang || 'zh-CN';" in script
         assert "typographyConfig.cjkFont" in script
+        assert "typographyConfig.cjkFont && !options.fontFace" in script
 
 
 class TestThemeValidation:
