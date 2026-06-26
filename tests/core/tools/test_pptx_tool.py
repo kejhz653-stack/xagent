@@ -130,11 +130,18 @@ class TestPresentationGeneratorRuntime:
         assert "const addTextAuto" in script
         assert "hasJapanese" in script
         assert "hasKorean" in script
+        assert "cjkFonts" in script
+        assert "Meiryo" in script
+        assert "Malgun Gothic" in script
         assert "merged.lang = 'ja-JP';" in script
         assert "merged.lang = 'ko-KR';" in script
         assert "merged.lang = 'zh-CN';" in script
-        assert "typographyConfig.cjkFont" in script
-        assert "typographyConfig.cjkFont && !options.fontFace" in script
+        assert "cjkLang === 'ja-JP'" in script
+        assert "cjkLang === 'ko-KR'" in script
+        assert "typographyConfig.cjkFonts.ja" in script
+        assert "typographyConfig.cjkFonts.ko" in script
+        assert "typographyConfig.cjkFonts.zh" in script
+        assert "!options.fontFace" in script
 
 
 class TestThemeValidation:

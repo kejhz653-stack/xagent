@@ -500,6 +500,9 @@ def _validate_theme_config(theme_config: Dict[str, Any]) -> List[str]:
             "title_font",
             "body_font",
             "cjk_font",
+            "cjk_font_zh",
+            "cjk_font_ja",
+            "cjk_font_ko",
             "mono_font",
             "font_fallback",
         ]
@@ -1216,7 +1219,11 @@ pres.title = '{self.title}';
 const typographyConfig = {{
   titleFont: {json.dumps(typography.get("title_font", "Arial"))},
   bodyFont: {json.dumps(typography.get("body_font", "Calibri"))},
-  cjkFont: {json.dumps(typography.get("cjk_font", "Microsoft YaHei"))},
+  cjkFonts: {{
+    zh: {json.dumps(typography.get("cjk_font_zh", typography.get("cjk_font", "Microsoft YaHei")))},
+    ja: {json.dumps(typography.get("cjk_font_ja", "Meiryo"))},
+    ko: {json.dumps(typography.get("cjk_font_ko", "Malgun Gothic"))},
+  }},
 }};
 
 // Dynamic font size estimation based on text length and character type
@@ -1252,17 +1259,26 @@ const getTextOptions = (text, options = {{}}, role = 'body') => {{
   }}
 
   if (containsCjk(text)) {{
+    let cjkLang = 'zh-CN';
     if (!merged.lang) {{
       if (hasJapanese(text)) {{
-        merged.lang = 'ja-JP';
+        cjkLang = 'ja-JP';
       }} else if (hasKorean(text)) {{
-        merged.lang = 'ko-KR';
-      }} else {{
-        merged.lang = 'zh-CN';
+        cjkLang = 'ko-KR';
       }}
+      merged.lang = cjkLang;
+    }} else {{
+      cjkLang = merged.lang;
     }}
-    if (typographyConfig.cjkFont && !options.fontFace) {{
-      merged.fontFace = typographyConfig.cjkFont;
+
+    if (!options.fontFace) {{
+      if (cjkLang === 'ja-JP' && typographyConfig.cjkFonts.ja) {{
+        merged.fontFace = typographyConfig.cjkFonts.ja;
+      }} else if (cjkLang === 'ko-KR' && typographyConfig.cjkFonts.ko) {{
+        merged.fontFace = typographyConfig.cjkFonts.ko;
+      }} else if (typographyConfig.cjkFonts.zh) {{
+        merged.fontFace = typographyConfig.cjkFonts.zh;
+      }}
     }}
   }}
 
