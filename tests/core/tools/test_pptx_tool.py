@@ -141,7 +141,9 @@ class TestPresentationGeneratorRuntime:
         assert "typographyConfig.cjkFonts.ja" in script
         assert "typographyConfig.cjkFonts.ko" in script
         assert "typographyConfig.cjkFonts.zh" in script
-        assert "!options.fontFace" in script
+        assert "const safeOptions = options ?? {}" in script
+        assert "hasOriginalFontFace" in script
+        assert "!hasOriginalFontFace" in script
 
 
 class TestThemeValidation:

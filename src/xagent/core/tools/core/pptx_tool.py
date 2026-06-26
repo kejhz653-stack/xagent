@@ -1252,7 +1252,9 @@ const containsCjk = (text) =>
   /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\u31F0-\u31FF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(text);
 
 const getTextOptions = (text, options = {{}}, role = 'body') => {{
-  const merged = {{ ...options }};
+  const safeOptions = options ?? {{}};
+  const hasOriginalFontFace = Boolean(safeOptions.fontFace);
+  const merged = {{ ...safeOptions }};
   if (!merged.fontFace) {{
     merged.fontFace =
       role === 'title' ? typographyConfig.titleFont : typographyConfig.bodyFont;
@@ -1271,7 +1273,7 @@ const getTextOptions = (text, options = {{}}, role = 'body') => {{
       cjkLang = merged.lang;
     }}
 
-    if (!options.fontFace) {{
+    if (!hasOriginalFontFace) {{
       if (cjkLang === 'ja-JP' && typographyConfig.cjkFonts.ja) {{
         merged.fontFace = typographyConfig.cjkFonts.ja;
       }} else if (cjkLang === 'ko-KR' && typographyConfig.cjkFonts.ko) {{
