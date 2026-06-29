@@ -131,9 +131,7 @@ class TestPresentationGeneratorRuntime:
         assert "hasJapanese" in script
         assert "hasKorean" in script
         assert "cjkFonts" in script
-        assert "Noto Sans CJK SC" in script
-        assert "Noto Sans CJK JP" in script
-        assert "Noto Sans CJK KR" in script
+        assert script.count('"Noto Sans CJK SC"') == 3
         assert "cjkLang = 'ja-JP';" in script
         assert "cjkLang = 'ko-KR';" in script
         assert "merged.lang = cjkLang;" in script

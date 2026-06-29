@@ -1245,14 +1245,14 @@ const estimateFontSize = (text, baseSize, minSize = 12) => {{
 }};
 
 const hasJapanese = (text) =>
-  typeof text === 'string' && /[\u3040-\u30FF\u31F0-\u31FF]/.test(text);
+  typeof text === 'string' && /[\u3040-\u30ff\u31f0-\u31ff]/.test(text);
 
 const hasKorean = (text) =>
-  typeof text === 'string' && /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(text);
+  typeof text === 'string' && /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/.test(text);
 
 const containsCjk = (text) =>
   typeof text === 'string' &&
-  /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\u31F0-\u31FF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\uFF00-\uFFEF]/.test(text);
+  /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\u31f0-\u31ff\u1100-\u11ff\u3130-\u318f\uac00-\ud7af\uff00-\uffef]/.test(text);
 
 const getTextOptions = (text, options = {{}}, role = 'body') => {{
   const safeOptions = options ?? {{}};
