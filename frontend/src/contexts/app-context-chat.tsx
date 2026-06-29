@@ -1284,6 +1284,12 @@ export function AppProvider({
         dispatch({ type: "UPSERT_STREAMING_FINAL_ANSWER", payload })
         if (message.type === "final_answer_start") {
           dispatch({ type: "SET_PROCESSING", payload: true })
+        } else if (message.type === "final_answer_end") {
+          dispatch({ type: "UPDATE_TASK_STATUS", payload: { status: "completed" } })
+          dispatch({ type: "SET_PROCESSING", payload: false })
+        } else if (message.type === "final_answer_error") {
+          dispatch({ type: "UPDATE_TASK_STATUS", payload: { status: "failed" } })
+          dispatch({ type: "SET_PROCESSING", payload: false })
         }
       }
       return
@@ -1524,6 +1530,12 @@ export function AppProvider({
             dispatch({ type: "UPSERT_STREAMING_FINAL_ANSWER", payload })
             if (eventType === "final_answer_start") {
               dispatch({ type: "SET_PROCESSING", payload: true })
+            } else if (eventType === "final_answer_end") {
+              dispatch({ type: "UPDATE_TASK_STATUS", payload: { status: "completed" } })
+              dispatch({ type: "SET_PROCESSING", payload: false })
+            } else if (eventType === "final_answer_error") {
+              dispatch({ type: "UPDATE_TASK_STATUS", payload: { status: "failed" } })
+              dispatch({ type: "SET_PROCESSING", payload: false })
             }
           }
 
