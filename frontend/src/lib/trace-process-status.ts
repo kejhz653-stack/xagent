@@ -98,11 +98,11 @@ export const resolveTraceProcessStatus = ({
     normalizeTraceProcessStatus(taskStatus)
   const inferred = getTraceProcessStatusFromEvents(traceEvents)
 
-  if (inferred && isStoppedTraceProcessStatus(inferred)) {
-    return inferred
-  }
   if (explicit && isStoppedTraceProcessStatus(explicit)) {
     return explicit
+  }
+  if (inferred && isStoppedTraceProcessStatus(inferred)) {
+    return inferred
   }
   return explicit || inferred
 }

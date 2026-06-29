@@ -111,4 +111,22 @@ describe("trace process status", () => {
       })
     ).toBe("completed")
   })
+
+  it("prefers explicit failed status over inferred completed trace status", () => {
+    expect(
+      resolveTraceProcessStatus({
+        processStatus: "failed",
+        traceEvents: [
+          {
+            event_type: "react_task_start",
+            data: {},
+          },
+          {
+            event_type: "react_task_end",
+            data: {},
+          },
+        ],
+      })
+    ).toBe("failed")
+  })
 })
