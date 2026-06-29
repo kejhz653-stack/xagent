@@ -147,6 +147,15 @@ class TestPresentationGeneratorRuntime:
         assert "hasOriginalFontFace" in script
         assert "!hasOriginalFontFace" in script
 
+    def test_build_js_script_uses_generic_cjk_font_for_ja_and_ko(self):
+        generator = PresentationGenerator()
+        generator.create("test")
+        custom_theme = {"typography": {"cjk_font": "Custom Generic CJK Font"}}
+
+        script = generator._build_js_script("deck.pptx", custom_theme)
+
+        assert script.count('"Custom Generic CJK Font"') == 3
+
     def test_get_text_options_cjk_behavior(self):
         """Execute generated JS helpers and verify getTextOptions behavior."""
         import shutil

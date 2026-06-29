@@ -1224,8 +1224,8 @@ const typographyConfig = {{
   bodyFont: {json.dumps(typography.get("body_font", "Calibri"))},
   cjkFonts: {{
     zh: {json.dumps(typography.get("cjk_font_zh", typography.get("cjk_font", "Noto Sans CJK SC")))},
-    ja: {json.dumps(typography.get("cjk_font_ja", "Noto Sans CJK JP"))},
-    ko: {json.dumps(typography.get("cjk_font_ko", "Noto Sans CJK KR"))},
+    ja: {json.dumps(typography.get("cjk_font_ja", typography.get("cjk_font", "Noto Sans CJK JP")))},
+    ko: {json.dumps(typography.get("cjk_font_ko", typography.get("cjk_font", "Noto Sans CJK KR")))},
   }},
 }};
 
