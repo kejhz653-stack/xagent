@@ -494,6 +494,9 @@ def _validate_theme_config(theme_config: Dict[str, Any]) -> List[str]:
     # Validate typography
     if "typography" in theme_config:
         typo = theme_config["typography"]
+        if not isinstance(typo, dict):
+            errors.append("Invalid typography: must be a dictionary")
+            typo = {}
 
         # P0: Font family validation (optional but recommended)
         font_fields = [

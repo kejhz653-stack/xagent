@@ -302,8 +302,12 @@ class TestThemeValidation:
         assert len(errors) > 0
         assert any("Invalid title_weight" in e for e in errors)
 
+    def test_validate_invalid_typography_type(self):
+        """Test validation catches non-dictionary typography without crashing."""
+        for invalid_typography in (None, "invalid", []):
+            errors = _validate_theme_config({"typography": invalid_typography})
+            assert any("Invalid typography: must be a dictionary" in e for e in errors)
 
-class TestThemeConfigCoverage:
     """Test theme config coverage for all presets."""
 
     def test_all_presets_have_required_keys(self):
