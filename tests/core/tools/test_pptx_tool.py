@@ -308,6 +308,8 @@ class TestThemeValidation:
             errors = _validate_theme_config({"typography": invalid_typography})
             assert any("Invalid typography: must be a dictionary" in e for e in errors)
 
+
+class TestThemeConfigCoverage:
     """Test theme config coverage for all presets."""
 
     def test_all_presets_have_required_keys(self):
