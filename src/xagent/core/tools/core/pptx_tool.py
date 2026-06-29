@@ -61,6 +61,8 @@ THEME_CONFIGS = {
             "title_font": "Arial",
             "body_font": "Calibri",
             "cjk_font": "Noto Sans CJK SC",
+            "cjk_font_ja": "Noto Sans CJK JP",
+            "cjk_font_ko": "Noto Sans CJK KR",
             "mono_font": "Courier New",
             "font_fallback": "sans-serif",
             "title_size": 56,
@@ -143,6 +145,8 @@ THEME_CONFIGS = {
             "title_font": "Segoe UI",
             "body_font": "Segoe UI",
             "cjk_font": "Noto Sans CJK SC",
+            "cjk_font_ja": "Noto Sans CJK JP",
+            "cjk_font_ko": "Noto Sans CJK KR",
             "mono_font": "Consolas",
             "font_fallback": "sans-serif",
             "title_size": 58,
@@ -225,6 +229,8 @@ THEME_CONFIGS = {
             "title_font": "Helvetica",
             "body_font": "Helvetica",
             "cjk_font": "Noto Sans CJK SC",
+            "cjk_font_ja": "Noto Sans CJK JP",
+            "cjk_font_ko": "Noto Sans CJK KR",
             "mono_font": "Monaco",
             "font_fallback": "sans-serif",
             "title_size": 60,
@@ -322,6 +328,8 @@ def _preset_to_config(theme: str) -> Dict[str, Any]:
             "title_font": "Arial",
             "body_font": "Calibri",
             "cjk_font": "Noto Sans CJK SC",
+            "cjk_font_ja": "Noto Sans CJK JP",
+            "cjk_font_ko": "Noto Sans CJK KR",
             "mono_font": "Courier New",
             "font_fallback": "sans-serif",
             "title_size": 56,
@@ -1244,8 +1252,12 @@ const estimateFontSize = (text, baseSize, minSize = 12) => {{
   return Math.max(baseSize * 0.4, minSize);
 }};
 
+// Heuristic: kana/half-width katakana only. Pure-Han Japanese (e.g. "日本") is
+// classified as zh-CN; mixed CJK runs (e.g. "今日は中文テスト") follow the first
+// matching script. Callers with a known source language should pass options.lang.
 const hasJapanese = (text) =>
-  typeof text === 'string' && /[\u3040-\u30ff\u31f0-\u31ff]/.test(text);
+  typeof text === 'string' &&
+  /[\u3040-\u30ff\u31f0-\u31ff\uff66-\uff9f]/.test(text);
 
 const hasKorean = (text) =>
   typeof text === 'string' && /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/.test(text);
@@ -1276,6 +1288,8 @@ const getTextOptions = (text, options = {{}}, role = 'body') => {{
       cjkLang = merged.lang;
     }}
 
+    // If caller sets a non-CJK lang (e.g. 'en-US') without fontFace, cjkLang keeps
+    // that value and the zh font is still applied via the final else branch below.
     if (!hasOriginalFontFace) {{
       if (cjkLang === 'ja-JP' && typographyConfig.cjkFonts.ja) {{
         merged.fontFace = typographyConfig.cjkFonts.ja;

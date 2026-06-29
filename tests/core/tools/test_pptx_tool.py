@@ -40,6 +40,8 @@ class TestThemeConfiguration:
         assert config["typography"]["title_size"] == 56
         assert config["typography"]["body_size"] == 20
         assert config["typography"]["cjk_font"] == "Noto Sans CJK SC"
+        assert config["typography"]["cjk_font_ja"] == "Noto Sans CJK JP"
+        assert config["typography"]["cjk_font_ko"] == "Noto Sans CJK KR"
         assert config["layout"]["title_bar"] is False
         assert config["visual"]["background_style"] == "solid"
 
@@ -131,7 +133,9 @@ class TestPresentationGeneratorRuntime:
         assert "hasJapanese" in script
         assert "hasKorean" in script
         assert "cjkFonts" in script
-        assert script.count('"Noto Sans CJK SC"') == 3
+        assert "Noto Sans CJK SC" in script
+        assert "Noto Sans CJK JP" in script
+        assert "Noto Sans CJK KR" in script
         assert "cjkLang = 'ja-JP';" in script
         assert "cjkLang = 'ko-KR';" in script
         assert "merged.lang = cjkLang;" in script
@@ -186,6 +190,7 @@ const assert = (cond, msg) => {
 };
 
 assert(opts('Hello').fontFace === typographyConfig.bodyFont, 'ascii body font');
+assert(opts('Hello', {}, 'title').fontFace === typographyConfig.titleFont, 'title role font');
 assert(opts('Hello').lang === undefined, 'ascii no lang');
 assert(opts('中文').lang === 'zh-CN', 'zh lang');
 assert(opts('中文').fontFace === typographyConfig.cjkFonts.zh, 'zh font');
@@ -193,6 +198,17 @@ assert(opts('ひらがな').lang === 'ja-JP', 'ja lang');
 assert(opts('ひらがな').fontFace === typographyConfig.cjkFonts.ja, 'ja font');
 assert(opts('한글').lang === 'ko-KR', 'ko lang');
 assert(opts('한글').fontFace === typographyConfig.cjkFonts.ko, 'ko font');
+assert(opts('今日は中文テスト').lang === 'ja-JP', 'mixed cjk ja lang');
+assert(
+  opts('今日は中文テスト').fontFace === typographyConfig.cjkFonts.ja,
+  'mixed cjk ja font'
+);
+assert(opts('\uff71\uff72\uff73').lang === 'ja-JP', 'halfwidth katakana lang');
+assert(
+  opts('\uff71\uff72\uff73').fontFace === typographyConfig.cjkFonts.ja,
+  'halfwidth katakana font'
+);
+assert(opts('日本').lang === 'zh-CN', 'pure han japanese heuristic');
 assert(opts('。').lang === 'zh-CN', 'cjk punctuation');
 assert(opts('Ａ').lang === 'zh-CN', 'fullwidth forms');
 assert(getTextOptions('中文', null).lang === 'zh-CN', 'null options');
