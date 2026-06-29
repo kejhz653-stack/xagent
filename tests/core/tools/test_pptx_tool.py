@@ -39,7 +39,7 @@ class TestThemeConfiguration:
         assert config["colors"]["accent"] == "#2563EB"
         assert config["typography"]["title_size"] == 56
         assert config["typography"]["body_size"] == 20
-        assert config["typography"]["cjk_font"] == "Microsoft YaHei"
+        assert config["typography"]["cjk_font"] == "Noto Sans CJK SC"
         assert config["layout"]["title_bar"] is False
         assert config["visual"]["background_style"] == "solid"
 
@@ -131,11 +131,13 @@ class TestPresentationGeneratorRuntime:
         assert "hasJapanese" in script
         assert "hasKorean" in script
         assert "cjkFonts" in script
-        assert "Meiryo" in script
-        assert "Malgun Gothic" in script
-        assert "merged.lang = 'ja-JP';" in script
-        assert "merged.lang = 'ko-KR';" in script
-        assert "merged.lang = 'zh-CN';" in script
+        assert "Noto Sans CJK SC" in script
+        assert "Noto Sans CJK JP" in script
+        assert "Noto Sans CJK KR" in script
+        assert "cjkLang = 'ja-JP';" in script
+        assert "cjkLang = 'ko-KR';" in script
+        assert "merged.lang = cjkLang;" in script
+        assert "'zh-CN'" in script
         assert "cjkLang === 'ja-JP'" in script
         assert "cjkLang === 'ko-KR'" in script
         assert "typographyConfig.cjkFonts.ja" in script
@@ -144,6 +146,68 @@ class TestPresentationGeneratorRuntime:
         assert "const safeOptions = options ?? {}" in script
         assert "hasOriginalFontFace" in script
         assert "!hasOriginalFontFace" in script
+
+    def test_get_text_options_cjk_behavior(self):
+        """Execute generated JS helpers and verify getTextOptions behavior."""
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        if not shutil.which("node"):
+            pytest.skip("Node.js not available")
+
+        generator = PresentationGenerator()
+        generator.create("test")
+        script = generator._build_js_script(
+            "deck.pptx",
+            _preset_to_config("aurora"),
+        )
+        start = script.index("const typographyConfig")
+        end = script.index("// Theme-based styling helper functions")
+        helpers = script[start:end]
+        test_js = (
+            helpers
+            + """
+const opts = (text, options = {}, role = 'body') =>
+  getTextOptions(text, options, role);
+const assert = (cond, msg) => {
+  if (!cond) {
+    console.error(msg);
+    process.exit(1);
+  }
+};
+
+assert(opts('Hello').fontFace === typographyConfig.bodyFont, 'ascii body font');
+assert(opts('Hello').lang === undefined, 'ascii no lang');
+assert(opts('中文').lang === 'zh-CN', 'zh lang');
+assert(opts('中文').fontFace === typographyConfig.cjkFonts.zh, 'zh font');
+assert(opts('ひらがな').lang === 'ja-JP', 'ja lang');
+assert(opts('ひらがな').fontFace === typographyConfig.cjkFonts.ja, 'ja font');
+assert(opts('한글').lang === 'ko-KR', 'ko lang');
+assert(opts('한글').fontFace === typographyConfig.cjkFonts.ko, 'ko font');
+assert(opts('。').lang === 'zh-CN', 'cjk punctuation');
+assert(opts('Ａ').lang === 'zh-CN', 'fullwidth forms');
+assert(getTextOptions('中文', null).lang === 'zh-CN', 'null options');
+assert(
+  getTextOptions('中文', { fontFace: 'Custom Font' }).fontFace === 'Custom Font',
+  'preserve fontFace'
+);
+console.log('ok');
+"""
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            js_file = Path(temp_dir) / "test_cjk_helpers.js"
+            js_file.write_text(test_js, encoding="utf-8")
+            result = subprocess.run(
+                ["node", str(js_file)],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+            )
+
+        assert result.returncode == 0, result.stderr or result.stdout
 
 
 class TestThemeValidation:

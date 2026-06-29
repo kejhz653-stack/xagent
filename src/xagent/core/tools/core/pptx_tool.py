@@ -60,7 +60,7 @@ THEME_CONFIGS = {
         "typography": {
             "title_font": "Arial",
             "body_font": "Calibri",
-            "cjk_font": "Microsoft YaHei",
+            "cjk_font": "Noto Sans CJK SC",
             "mono_font": "Courier New",
             "font_fallback": "sans-serif",
             "title_size": 56,
@@ -142,7 +142,7 @@ THEME_CONFIGS = {
         "typography": {
             "title_font": "Segoe UI",
             "body_font": "Segoe UI",
-            "cjk_font": "Microsoft YaHei",
+            "cjk_font": "Noto Sans CJK SC",
             "mono_font": "Consolas",
             "font_fallback": "sans-serif",
             "title_size": 58,
@@ -224,7 +224,7 @@ THEME_CONFIGS = {
         "typography": {
             "title_font": "Helvetica",
             "body_font": "Helvetica",
-            "cjk_font": "Microsoft YaHei",
+            "cjk_font": "Noto Sans CJK SC",
             "mono_font": "Monaco",
             "font_fallback": "sans-serif",
             "title_size": 60,
@@ -321,7 +321,7 @@ def _preset_to_config(theme: str) -> Dict[str, Any]:
         "typography": {
             "title_font": "Arial",
             "body_font": "Calibri",
-            "cjk_font": "Microsoft YaHei",
+            "cjk_font": "Noto Sans CJK SC",
             "mono_font": "Courier New",
             "font_fallback": "sans-serif",
             "title_size": 56,
@@ -1220,9 +1220,9 @@ const typographyConfig = {{
   titleFont: {json.dumps(typography.get("title_font", "Arial"))},
   bodyFont: {json.dumps(typography.get("body_font", "Calibri"))},
   cjkFonts: {{
-    zh: {json.dumps(typography.get("cjk_font_zh", typography.get("cjk_font", "Microsoft YaHei")))},
-    ja: {json.dumps(typography.get("cjk_font_ja", "Meiryo"))},
-    ko: {json.dumps(typography.get("cjk_font_ko", "Malgun Gothic"))},
+    zh: {json.dumps(typography.get("cjk_font_zh", typography.get("cjk_font", "Noto Sans CJK SC")))},
+    ja: {json.dumps(typography.get("cjk_font_ja", "Noto Sans CJK JP"))},
+    ko: {json.dumps(typography.get("cjk_font_ko", "Noto Sans CJK KR"))},
   }},
 }};
 
@@ -1249,7 +1249,7 @@ const hasKorean = (text) =>
 
 const containsCjk = (text) =>
   typeof text === 'string' &&
-  /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\u31F0-\u31FF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(text);
+  /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\u31F0-\u31FF\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\uFF00-\uFFEF]/.test(text);
 
 const getTextOptions = (text, options = {{}}, role = 'body') => {{
   const safeOptions = options ?? {{}};

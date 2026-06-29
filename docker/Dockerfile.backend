@@ -123,6 +123,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     openssl \
     libreoffice \
+    # Noto Sans/Serif CJK families referenced by pptx_tool default fontFace values
     fonts-noto-cjk \
     libglib2.0-0 \
     libsm6 \
