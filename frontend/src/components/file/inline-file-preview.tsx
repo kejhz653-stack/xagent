@@ -46,7 +46,7 @@ function InlineImagePreview({
   onFileClick?: (filePath: string, fileName: string) => void
 }) {
   const apiUrl = getApiUrl()
-  const shouldFallback = Boolean(source.fileId && !source.previewUrl)
+  const shouldFallback = Boolean(source.fileId)
   const [resolvedUrl, setResolvedUrl] = useState(shouldFallback ? '' : previewUrl)
 
   useEffect(() => {
@@ -68,17 +68,15 @@ function InlineImagePreview({
             },
           }
         )
+        if (isCancelled) return
         if (!response.ok) {
-          if (!isCancelled) {
-            setResolvedUrl(previewUrl)
-          }
+          setResolvedUrl(previewUrl)
           return
         }
         const blob = await response.blob()
+        if (isCancelled) return
         objectUrl = URL.createObjectURL(blob)
-        if (!isCancelled) {
-          setResolvedUrl(objectUrl)
-        }
+        setResolvedUrl(objectUrl)
       } catch {
         if (!isCancelled) {
           setResolvedUrl(previewUrl)

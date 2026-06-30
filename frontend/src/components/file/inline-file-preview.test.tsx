@@ -397,6 +397,73 @@ describe('InlineFilePreview', () => {
     )
   })
 
+  it('uses authenticated preview for images with fileId even when previewUrl is set', async () => {
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(['image-bytes'], { type: 'image/png' }),
+    })
+
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'image',
+          fileId: 'image-file-id',
+          previewUrl: 'https://cdn.example.com/plot.png',
+          filename: 'plot.png',
+        }}
+      />
+    )
+
+    await waitFor(() => {
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        'http://api.local/api/files/preview/image-file-id',
+        expect.objectContaining({ cache: 'no-cache' })
+      )
+    })
+
+    const image = await screen.findByAltText('plot.png')
+    expect(image.getAttribute('src')).toMatch(/^blob:/)
+  })
+
+  it('revokes blob URLs when unmounting during authenticated image fetch', async () => {
+    const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL')
+    const revokeObjectUrlSpy = vi.spyOn(URL, 'revokeObjectURL')
+    let resolveBlob: ((blob: Blob) => void) | undefined
+
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      blob: () =>
+        new Promise<Blob>((resolve) => {
+          resolveBlob = resolve
+        }),
+    })
+
+    const { unmount } = render(
+      <InlineFilePreview
+        source={{
+          type: 'image',
+          fileId: 'image-file-id',
+          filename: 'plot.png',
+        }}
+      />
+    )
+
+    await waitFor(() => {
+      expect(apiRequestMock).toHaveBeenCalled()
+    })
+
+    unmount()
+    resolveBlob?.(new Blob(['image-bytes'], { type: 'image/png' }))
+
+    await waitFor(() => {
+      expect(createObjectUrlSpy).not.toHaveBeenCalled()
+    })
+    expect(revokeObjectUrlSpy).not.toHaveBeenCalled()
+
+    createObjectUrlSpy.mockRestore()
+    revokeObjectUrlSpy.mockRestore()
+  })
+
   it('does not automatically render cross-origin image preview URLs', () => {
     render(
       <InlineFilePreview
