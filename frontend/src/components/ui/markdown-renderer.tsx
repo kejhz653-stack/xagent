@@ -11,6 +11,7 @@ import { InlineFilePreview } from '@/components/file/inline-file-preview'
 import {
   getInlineFilePreviewKind,
   isPreviewableInlineFileKind,
+  resolveInlineFileId,
 } from '@/components/file/inline-file-preview-utils'
 import { getApiUrl } from '@/lib/utils'
 
@@ -243,12 +244,13 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
           const fileName = title || linkText || fileNameFromPath
           const previewFilename = fileNameFromPath || fileName
           const previewKind = getInlineFilePreviewKind({ filename: previewFilename })
+          const fileId = resolveInlineFileId(filePath)
 
           if (isPreviewableInlineFileKind(previewKind)) {
             return (
               <InlineFilePreview
                 source={{
-                  fileId: filePath,
+                  fileId,
                   filename: previewFilename,
                   type: previewKind === 'image' ? 'image' : undefined,
                 }}
@@ -312,11 +314,12 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
       img({ node: _node, src, alt, title, ...props }) {
         if (src && src.startsWith('file:')) {
           const filePath = src.replace(/^file:/, '')
-          const fileName = title || alt || filePath.split('/').pop() || filePath
+          const fileNameFromPath = filePath.split('/').pop() || filePath
+          const fileName = title || alt || fileNameFromPath
           return (
             <InlineFilePreview
               source={{
-                fileId: filePath,
+                fileId: resolveInlineFileId(filePath),
                 filename: fileName,
                 type: 'image',
               }}

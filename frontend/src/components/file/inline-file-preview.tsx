@@ -13,6 +13,7 @@ import {
   getInlineFilePreviewUrl,
   getPreviewUrlTrust,
   isPreviewableInlineFileKind,
+  resolveInlineFileId,
   type InlineFilePreviewSource,
 } from './inline-file-preview-utils'
 
@@ -234,11 +235,14 @@ export function InlineFilePreview({
   loadErrorText = DEFAULT_LOAD_ERROR_TEXT,
 }: InlineFilePreviewProps) {
   const apiUrl = getApiUrl()
-  const kind = getInlineFilePreviewKind(source)
-  const previewUrl = getInlineFilePreviewUrl(source, apiUrl)
-  const downloadUrl = getInlineFileDownloadUrl(source, apiUrl)
-  const previewUrlTrust = getPreviewUrlTrust(source, apiUrl)
-  const filename = fileNameFromSource(source)
+  const resolvedSource = source.fileId
+    ? { ...source, fileId: resolveInlineFileId(source.fileId) }
+    : source
+  const kind = getInlineFilePreviewKind(resolvedSource)
+  const previewUrl = getInlineFilePreviewUrl(resolvedSource, apiUrl)
+  const downloadUrl = getInlineFileDownloadUrl(resolvedSource, apiUrl)
+  const previewUrlTrust = getPreviewUrlTrust(resolvedSource, apiUrl)
+  const filename = fileNameFromSource(resolvedSource)
   const canOpenFilePreview = Boolean(onFileClick && source.fileId)
 
   const handleOpenPreview = (event: React.MouseEvent<HTMLElement>) => {
@@ -264,7 +268,7 @@ export function InlineFilePreview({
   if (kind === 'image') {
     return (
       <InlineImagePreview
-        source={source}
+        source={resolvedSource}
         previewUrl={previewUrl}
         filename={filename}
         imageClassName={imageClassName}
@@ -314,7 +318,7 @@ export function InlineFilePreview({
           kind={kind}
           previewUrl={previewUrl}
           loadErrorText={loadErrorText}
-          fileId={source.fileId}
+          fileId={resolvedSource.fileId}
         />
       </div>
     </div>

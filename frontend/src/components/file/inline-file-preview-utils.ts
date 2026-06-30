@@ -196,3 +196,9 @@ export const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
 
 export const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+/** When file refs use ``file:<uuid>/<filename>``, API routes expect the bare UUID. */
+export const resolveInlineFileId = (filePath: string): string => {
+  const firstSegment = filePath.split('/')[0]
+  return UUID_PATTERN.test(firstSegment) ? firstSegment : filePath
+}

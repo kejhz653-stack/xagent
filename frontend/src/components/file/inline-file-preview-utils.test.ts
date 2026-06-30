@@ -5,6 +5,7 @@ import {
   getInlineFilePreviewKind,
   getInlineFilePreviewUrl,
   getPreviewUrlTrust,
+  resolveInlineFileId,
 } from './inline-file-preview-utils'
 
 describe('inline-file-preview-utils', () => {
@@ -205,5 +206,15 @@ describe('inline-file-preview-utils', () => {
 
   it('returns an empty string when no file id or preview URL is available', () => {
     expect(getInlineFileDownloadUrl({ filename: 'anon.bin' }, 'http://api.local')).toBe('')
+  })
+
+  it('extracts bare uuid from file paths that include a filename suffix', () => {
+    expect(
+      resolveInlineFileId('550e8400-e29b-41d4-a716-446655440000/linkedin.png')
+    ).toBe('550e8400-e29b-41d4-a716-446655440000')
+  })
+
+  it('returns legacy paths unchanged when the first segment is not a uuid', () => {
+    expect(resolveInlineFileId('output/screenshot.png')).toBe('output/screenshot.png')
   })
 })

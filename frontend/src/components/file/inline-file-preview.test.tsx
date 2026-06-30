@@ -77,6 +77,30 @@ describe('InlineFilePreview', () => {
     })
   })
 
+  it('extracts uuid from file paths that include a filename suffix', async () => {
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(['image-bytes'], { type: 'image/png' }),
+    })
+
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'image',
+          fileId: '550e8400-e29b-41d4-a716-446655440000/linkedin.png',
+          filename: 'linkedin.png',
+        }}
+      />
+    )
+
+    await waitFor(() => {
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        'http://api.local/api/files/preview/550e8400-e29b-41d4-a716-446655440000',
+        expect.objectContaining({ cache: 'no-cache' })
+      )
+    })
+  })
+
   it('renders image previews from file ids', () => {
     render(
       <InlineFilePreview
