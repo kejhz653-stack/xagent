@@ -10,6 +10,7 @@ import { useI18n } from '@/contexts/i18n-context'
 import { InlineFilePreview } from '@/components/file/inline-file-preview'
 import {
   getInlineFilePreviewKind,
+  getInlineFilePreviewMimeType,
   isPreviewableInlineFileKind,
   resolveInlineFileId,
   type PreviewableInlineFileKind,
@@ -272,10 +273,7 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
                   fileId,
                   filename: preview.displayFilename,
                   type: preview.previewKind,
-                  mimeType:
-                    preview.previewKind === 'presentation'
-                      ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-                      : undefined,
+                  mimeType: getInlineFilePreviewMimeType(preview.previewKind),
                 }}
                 openLabel={t('files.previewDialog.buttons.open')}
                 loadErrorText={t('files.previewDialog.errors.loadFailed')}

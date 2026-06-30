@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   getInlineFileDownloadUrl,
   getInlineFilePreviewKind,
+  getInlineFilePreviewMimeType,
   getInlineFilePreviewUrl,
   getPreviewUrlTrust,
   resolveInlineFileId,
@@ -222,5 +223,19 @@ describe('inline-file-preview-utils', () => {
 
   it('returns legacy paths unchanged when the first segment is not a uuid', () => {
     expect(resolveInlineFileId('output/screenshot.png')).toBe('output/screenshot.png')
+  })
+
+  it('maps preview kinds to default OOXML mime types', () => {
+    expect(getInlineFilePreviewMimeType('presentation')).toBe(
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    )
+    expect(getInlineFilePreviewMimeType('document')).toBe(
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    )
+    expect(getInlineFilePreviewMimeType('spreadsheet')).toBe(
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    expect(getInlineFilePreviewMimeType('image')).toBeUndefined()
+    expect(getInlineFilePreviewMimeType('file')).toBeUndefined()
   })
 })

@@ -70,6 +70,10 @@ function InlineImagePreview({
         )
         if (isCancelled) return
         if (!response.ok) {
+          // Last-resort fallback: try the public preview URL when the
+          // authenticated route fails. On Agent Builder surfaces that
+          // route may also require auth, but a spinner with no recovery
+          // path is worse than attempting the anonymous endpoint.
           setResolvedUrl(previewUrl)
           return
         }
@@ -79,6 +83,7 @@ function InlineImagePreview({
         setResolvedUrl(objectUrl)
       } catch {
         if (!isCancelled) {
+          // See comment above: public preview is best-effort after auth errors.
           setResolvedUrl(previewUrl)
         }
       }

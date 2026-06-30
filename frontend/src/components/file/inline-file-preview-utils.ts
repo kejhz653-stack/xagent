@@ -45,6 +45,23 @@ const SPREADSHEET_MIME_TYPES = new Set<string>([
   'text/csv',
 ])
 
+/** Default OOXML mime types for inline preview kinds (images vary by file). */
+export const INLINE_FILE_PREVIEW_MIME_BY_KIND: Partial<
+  Record<PreviewableInlineFileKind, string>
+> = {
+  presentation:
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  document: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  spreadsheet: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+}
+
+export const getInlineFilePreviewMimeType = (
+  kind: InlineFilePreviewKind
+): string | undefined => {
+  if (kind === 'file' || kind === 'image') return undefined
+  return INLINE_FILE_PREVIEW_MIME_BY_KIND[kind]
+}
+
 export const isPreviewableInlineFileKind = (
   kind: InlineFilePreviewKind
 ): kind is PreviewableInlineFileKind =>
