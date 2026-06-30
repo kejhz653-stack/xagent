@@ -14,7 +14,6 @@ import {
   getPreviewUrlTrust,
   isPreviewableInlineFileKind,
   type InlineFilePreviewSource,
-  UUID_PATTERN,
 } from './inline-file-preview-utils'
 
 type InlineFilePreviewProps = {
@@ -55,7 +54,7 @@ function InlineImagePreview({
     setResolvedUrl(previewUrl)
 
     const runFallback = async () => {
-      if (!source.fileId || source.previewUrl || UUID_PATTERN.test(source.fileId)) return
+      if (!source.fileId || source.previewUrl) return
       try {
         const response = await apiRequest(
           `${apiUrl}/api/files/preview/${encodeURIComponent(source.fileId)}`,

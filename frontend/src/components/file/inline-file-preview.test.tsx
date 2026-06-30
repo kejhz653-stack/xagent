@@ -1,6 +1,6 @@
 /// <reference types="@testing-library/jest-dom/vitest" />
 import React from 'react'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiRequestMock = vi.hoisted(() => vi.fn())
@@ -45,6 +45,36 @@ describe('InlineFilePreview', () => {
 
   afterEach(() => {
     cleanup()
+  })
+
+  it('falls back to authenticated preview for uuid image file ids', async () => {
+    const blob = new Blob(['image-bytes'], { type: 'image/png' })
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      blob: async () => blob,
+    })
+
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'image',
+          fileId: '550e8400-e29b-41d4-a716-446655440000',
+          filename: 'linkedin-visual.png',
+        }}
+      />
+    )
+
+    await waitFor(() => {
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        'http://api.local/api/files/preview/550e8400-e29b-41d4-a716-446655440000',
+        expect.objectContaining({ cache: 'no-cache' })
+      )
+    })
+
+    const image = screen.getByAltText('linkedin-visual.png')
+    await waitFor(() => {
+      expect(image.getAttribute('src')).toMatch(/^blob:/)
+    })
   })
 
   it('renders image previews from file ids', () => {

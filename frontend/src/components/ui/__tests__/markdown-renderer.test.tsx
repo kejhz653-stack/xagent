@@ -195,15 +195,31 @@ describe('MarkdownRenderer', () => {
     })
   })
 
-  it('does not run authenticated fallback for uuid file: images', async () => {
+  it('renders file links as image previews when the path has an image extension', () => {
+    const content = '[LinkedIn visual](file:550e8400-e29b-41d4-a716-446655440000/linkedin.png)'
+    render(<MarkdownRenderer content={content} />)
+
+    expect(screen.getByAltText('linkedin.png')).toBeInTheDocument()
+  })
+
+  it('uses authenticated preview fallback for uuid file: images', async () => {
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(['image-bytes'], { type: 'image/png' }),
+    })
     const content = '![uuid image](file:550e8400-e29b-41d4-a716-446655440000)'
     render(<MarkdownRenderer content={content} />)
 
     await waitFor(() => {
-      const image = screen.getByAltText('uuid image')
-      expect(image).toBeInTheDocument()
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        'http://api.local/api/files/preview/550e8400-e29b-41d4-a716-446655440000',
+        expect.objectContaining({ cache: 'no-cache' })
+      )
     })
 
-    expect(apiRequestMock).not.toHaveBeenCalled()
+    const image = screen.getByAltText('uuid image')
+    await waitFor(() => {
+      expect(image.getAttribute('src')).toMatch(/^blob:/)
+    })
   })
 })

@@ -191,9 +191,12 @@ function containsPreviewFileLinkNode(node: any): boolean {
   if (!node) return false
   const href = node.properties?.href
   if (typeof href === 'string' && href.startsWith('file:')) {
+    const filePath = href.replace(/^file:/, '')
+    const fileNameFromPath = filePath.split('/').pop() || filePath
     const title = typeof node.properties?.title === 'string' ? node.properties.title : ''
     const label = title || hastText(node)
-    if (isPreviewableInlineFileKind(getInlineFilePreviewKind({ filename: label }))) return true
+    const previewFilename = fileNameFromPath || label
+    if (isPreviewableInlineFileKind(getInlineFilePreviewKind({ filename: previewFilename }))) return true
   }
   if (!Array.isArray(node.children)) return false
   return node.children.some(containsPreviewFileLinkNode)
@@ -238,13 +241,16 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
           const fileNameFromPath = filePath.split('/').pop() || filePath
           const linkText = nodeText(children).trim()
           const fileName = title || linkText || fileNameFromPath
+          const previewFilename = fileNameFromPath || fileName
+          const previewKind = getInlineFilePreviewKind({ filename: previewFilename })
 
-          if (isPreviewableInlineFileKind(getInlineFilePreviewKind({ filename: fileName }))) {
+          if (isPreviewableInlineFileKind(previewKind)) {
             return (
               <InlineFilePreview
                 source={{
                   fileId: filePath,
-                  filename: fileName,
+                  filename: previewFilename,
+                  type: previewKind === 'image' ? 'image' : undefined,
                 }}
                 openLabel={t('files.previewDialog.buttons.open')}
                 loadErrorText={t('files.previewDialog.errors.loadFailed')}
