@@ -91,6 +91,20 @@ describe('MarkdownRenderer', () => {
     expect(mathElements.length).toBe(0)
   })
 
+  it('passes resolved file id to onFileClick for non-previewable file links', () => {
+    const handleFileClick = vi.fn()
+    const content = '[archive.zip](file:550e8400-e29b-41d4-a716-446655440000/archive.zip)'
+
+    render(<MarkdownRenderer content={content} onFileClick={handleFileClick} />)
+
+    fireEvent.click(screen.getByText('archive.zip'))
+
+    expect(handleFileClick).toHaveBeenCalledWith(
+      '550e8400-e29b-41d4-a716-446655440000',
+      'archive.zip'
+    )
+  })
+
   it('handles file: links with onFileClick callback', () => {
     const handleFileClick = vi.fn()
     const content = '[open file](file:/tmp/test.txt)'

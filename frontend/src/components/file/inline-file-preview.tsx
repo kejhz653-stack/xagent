@@ -107,6 +107,7 @@ function InlineImagePreview({
     return (
       <div
         aria-label={filename}
+        data-inline-file-preview-wrapper
         className={cn(
           'flex min-h-[8rem] items-center justify-center text-muted-foreground',
           imageClassName || 'max-w-full rounded-lg border border-border/50 bg-muted/20'

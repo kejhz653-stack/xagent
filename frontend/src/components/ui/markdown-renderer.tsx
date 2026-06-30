@@ -234,6 +234,10 @@ function containsPreviewFileLinkNode(node: any): boolean {
     const label = title || hastText(node)
     if (resolvePreviewableFileLink({ fileNameFromPath, fileName: label })) return true
   }
+  const src = node.properties?.src
+  if (typeof src === 'string' && src.startsWith('file:')) {
+    return true
+  }
   if (!Array.isArray(node.children)) return false
   return node.children.some(containsPreviewFileLinkNode)
 }
@@ -286,7 +290,7 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
             if (onFileClick) {
               e.preventDefault()
               const fallbackTitle = title || linkText || fileNameFromPath
-              onFileClick(filePath, fallbackTitle)
+              onFileClick(fileId, fallbackTitle)
             }
           }
 
