@@ -195,6 +195,22 @@ describe('MarkdownRenderer', () => {
     })
   })
 
+  it('prefers link label over generic file id when determining preview kind', async () => {
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => new Uint8Array([65, 66]).buffer,
+    })
+    const content = '[report.docx](file:doc-file-id)'
+
+    render(<MarkdownRenderer content={content} />)
+
+    expect(await screen.findByTestId('docx-preview')).toHaveTextContent('QUI=')
+    expect(apiRequestMock).toHaveBeenCalledWith(
+      'http://api.local/api/files/public/preview/doc-file-id',
+      expect.objectContaining({ cache: 'no-cache' })
+    )
+  })
+
   it('renders file links as image previews when the path has an image extension', async () => {
     apiRequestMock.mockResolvedValue({
       ok: true,
