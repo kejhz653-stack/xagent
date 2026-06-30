@@ -10,6 +10,8 @@ vi.mock('@/lib/utils', () => ({
   getApiUrl: () => 'http://api.local',
   getFilePublicPreviewUrl: (fileId: string, apiUrl = 'http://api.local') =>
     `${apiUrl}/api/files/public/preview/${encodeURIComponent(fileId)}`,
+  getFilePublicDownloadUrl: (fileId: string, apiUrl = 'http://api.local') =>
+    `${apiUrl}/api/files/public/download/${encodeURIComponent(fileId)}`,
 }))
 
 vi.mock('@/lib/api-wrapper', () => ({
@@ -29,9 +31,13 @@ vi.mock('@/components/file/excel-preview-renderer', () => ({
 }))
 
 vi.mock('@/components/file/pptx-preview-renderer', () => ({
-  PptxPreviewRenderer: ({ base64Content }: { base64Content: string }) => (
-    <div data-testid="pptx-preview">{base64Content}</div>
-  ),
+  PptxPreviewRenderer: ({
+    base64Content,
+    fileId,
+  }: {
+    base64Content?: string
+    fileId?: string
+  }) => <div data-testid="pptx-preview">{base64Content ?? fileId ?? ''}</div>,
 }))
 
 vi.mock('@/contexts/i18n-context', () => ({
@@ -99,24 +105,17 @@ describe('MarkdownRenderer', () => {
   })
 
   it('renders pptx file links as inline previews', async () => {
-    // Arbitrary sentinel bytes; base64 encodes to "AQI=". See
-    // inline-file-preview.test.tsx for why we avoid "PK" here.
-    apiRequestMock.mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([0x01, 0x02]).buffer,
-    })
-
     const content = '[example_presentation.pptx](file:99fb81ab-b995-4976-be18-21b02f748768)'
     render(<MarkdownRenderer content={content} />)
 
-    // Browsers can't render raw .pptx in an iframe, and the backend's
-    // /api/files/public/preview endpoint now returns the raw bytes, so
-    // pptx inline previews are funnelled through PptxPreviewRenderer
-    // (canvas-based, pptxviewjs) — same fetch+base64 pattern as docx/xlsx.
-    expect(await screen.findByTestId('pptx-preview')).toHaveTextContent('AQI=')
-    expect(apiRequestMock).toHaveBeenCalledWith(
+    // Managed fileId path: mount PptxPreviewRenderer immediately and let it
+    // probe the PDF endpoint first instead of eagerly downloading raw bytes.
+    expect(await screen.findByTestId('pptx-preview')).toHaveTextContent(
+      '99fb81ab-b995-4976-be18-21b02f748768'
+    )
+    expect(apiRequestMock).not.toHaveBeenCalledWith(
       'http://api.local/api/files/public/preview/99fb81ab-b995-4976-be18-21b02f748768',
-      expect.objectContaining({ cache: 'no-cache' })
+      expect.anything()
     )
     expect(screen.queryByText('example_presentation.pptx')?.tagName.toLowerCase()).not.toBe('a')
   })
