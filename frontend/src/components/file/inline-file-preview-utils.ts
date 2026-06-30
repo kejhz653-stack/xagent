@@ -199,6 +199,6 @@ export const UUID_PATTERN =
 
 /** When file refs use ``file:<uuid>/<filename>``, API routes expect the bare UUID. */
 export const resolveInlineFileId = (filePath: string): string => {
-  const firstSegment = filePath.split('/')[0]
+  const firstSegment = filePath.split('/').find(Boolean) || ''
   return UUID_PATTERN.test(firstSegment) ? firstSegment : filePath
 }

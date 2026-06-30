@@ -226,7 +226,7 @@ describe('MarkdownRenderer', () => {
       )
     })
 
-    const image = screen.getByAltText('linkedin.png')
+    const image = screen.getByAltText('LinkedIn visual')
     await waitFor(() => {
       expect(image.getAttribute('src')).toMatch(/^blob:/)
     })

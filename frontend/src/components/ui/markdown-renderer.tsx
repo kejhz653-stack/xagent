@@ -212,7 +212,7 @@ function resolvePreviewableFileLink({
 }): { previewKind: PreviewableInlineFileKind; displayFilename: string } | null {
   const pathKind = getInlineFilePreviewKind({ filename: fileNameFromPath })
   if (isPreviewableInlineFileKind(pathKind)) {
-    return { previewKind: pathKind, displayFilename: fileNameFromPath }
+    return { previewKind: pathKind, displayFilename: fileName }
   }
 
   const labelKind = getInlineFilePreviewKind({ filename: fileName })
@@ -271,7 +271,11 @@ export function MarkdownRenderer({ content, className = '', onFileClick, onAgent
                 source={{
                   fileId,
                   filename: preview.displayFilename,
-                  type: preview.previewKind === 'image' ? 'image' : undefined,
+                  type: preview.previewKind,
+                  mimeType:
+                    preview.previewKind === 'presentation'
+                      ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                      : undefined,
                 }}
                 openLabel={t('files.previewDialog.buttons.open')}
                 loadErrorText={t('files.previewDialog.errors.loadFailed')}
