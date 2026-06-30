@@ -46,19 +46,20 @@ function InlineImagePreview({
   onFileClick?: (filePath: string, fileName: string) => void
 }) {
   const apiUrl = getApiUrl()
-  const [resolvedUrl, setResolvedUrl] = useState(previewUrl)
+  const shouldFallback = Boolean(source.fileId && !source.previewUrl)
+  const [resolvedUrl, setResolvedUrl] = useState(shouldFallback ? '' : previewUrl)
 
   useEffect(() => {
     let objectUrl: string | null = null
     let isCancelled = false
 
-    setResolvedUrl(previewUrl)
+    setResolvedUrl(shouldFallback ? '' : previewUrl)
 
     const runFallback = async () => {
-      if (!source.fileId || source.previewUrl) return
+      if (!shouldFallback) return
       try {
         const response = await apiRequest(
-          `${apiUrl}/api/files/preview/${encodeURIComponent(source.fileId)}`,
+          `${apiUrl}/api/files/preview/${encodeURIComponent(source.fileId!)}`,
           {
             cache: 'no-cache',
             headers: {
@@ -67,14 +68,21 @@ function InlineImagePreview({
             },
           }
         )
-        if (!response.ok) return
+        if (!response.ok) {
+          if (!isCancelled) {
+            setResolvedUrl(previewUrl)
+          }
+          return
+        }
         const blob = await response.blob()
         objectUrl = URL.createObjectURL(blob)
         if (!isCancelled) {
           setResolvedUrl(objectUrl)
         }
       } catch {
-        return
+        if (!isCancelled) {
+          setResolvedUrl(previewUrl)
+        }
       }
     }
 
@@ -84,12 +92,26 @@ function InlineImagePreview({
       isCancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [apiUrl, previewUrl, source.fileId, source.previewUrl])
+  }, [apiUrl, previewUrl, shouldFallback, source.fileId])
 
   const handleClick = (event: React.MouseEvent<HTMLImageElement>) => {
     if (!onFileClick || !source.fileId) return
     event.preventDefault()
     onFileClick(source.fileId, filename)
+  }
+
+  if (!resolvedUrl) {
+    return (
+      <div
+        aria-label={filename}
+        className={cn(
+          'flex min-h-[8rem] items-center justify-center text-muted-foreground',
+          imageClassName || 'max-w-full rounded-lg border border-border/50 bg-muted/20'
+        )}
+      >
+        <Loader2 className="h-4 w-4 animate-spin" />
+      </div>
+    )
   }
 
   return (
@@ -243,12 +265,12 @@ export function InlineFilePreview({
   const downloadUrl = getInlineFileDownloadUrl(resolvedSource, apiUrl)
   const previewUrlTrust = getPreviewUrlTrust(resolvedSource, apiUrl)
   const filename = fileNameFromSource(resolvedSource)
-  const canOpenFilePreview = Boolean(onFileClick && source.fileId)
+  const canOpenFilePreview = Boolean(onFileClick && resolvedSource.fileId)
 
   const handleOpenPreview = (event: React.MouseEvent<HTMLElement>) => {
-    if (!onFileClick || !source.fileId) return
+    if (!onFileClick || !resolvedSource.fileId) return
     event.preventDefault()
-    onFileClick(source.fileId, filename)
+    onFileClick(resolvedSource.fileId, filename)
   }
 
   if (!previewUrl) return null

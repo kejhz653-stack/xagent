@@ -101,17 +101,96 @@ describe('InlineFilePreview', () => {
     })
   })
 
-  it('renders image previews from file ids', () => {
+  it('loads image previews through authenticated preview when file id is present', async () => {
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(['image-bytes'], { type: 'image/png' }),
+    })
+
     render(
       <InlineFilePreview
         source={{ type: 'image', fileId: 'image-file-id', filename: 'plot.png' }}
       />
     )
 
-    expect(screen.getByAltText('plot.png')).toHaveAttribute(
-      'src',
-      'http://api.local/api/files/public/preview/image-file-id'
+    await waitFor(() => {
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        'http://api.local/api/files/preview/image-file-id',
+        expect.objectContaining({ cache: 'no-cache' })
+      )
+    })
+
+    const image = await screen.findByAltText('plot.png')
+    expect(image.getAttribute('src')).toMatch(/^blob:/)
+  })
+
+  it('passes resolved file id to onFileClick for uuid paths with filename suffix', () => {
+    const handleFileClick = vi.fn()
+
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'presentation',
+          fileId: '550e8400-e29b-41d4-a716-446655440000/slides.pptx',
+          filename: 'slides.pptx',
+        }}
+        onFileClick={handleFileClick}
+      />
     )
+
+    fireEvent.click(screen.getByText('Open'))
+
+    expect(handleFileClick).toHaveBeenCalledWith(
+      '550e8400-e29b-41d4-a716-446655440000',
+      'slides.pptx'
+    )
+  })
+
+  it('does not request public preview before authenticated image fallback', async () => {
+    apiRequestMock.mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(['image-bytes'], { type: 'image/png' }),
+    })
+
+    render(
+      <InlineFilePreview
+        source={{
+          type: 'image',
+          fileId: '550e8400-e29b-41d4-a716-446655440000',
+          filename: 'plot.png',
+        }}
+      />
+    )
+
+    expect(screen.queryByAltText('plot.png')).not.toBeInTheDocument()
+    expect(apiRequestMock).not.toHaveBeenCalledWith(
+      'http://api.local/api/files/public/preview/550e8400-e29b-41d4-a716-446655440000',
+      expect.anything()
+    )
+
+    await waitFor(() => {
+      expect(screen.getByAltText('plot.png').getAttribute('src')).toMatch(/^blob:/)
+    })
+  })
+
+  it('renders image previews from file ids', async () => {
+    apiRequestMock.mockResolvedValue({
+      ok: false,
+    })
+
+    render(
+      <InlineFilePreview
+        source={{ type: 'image', fileId: 'image-file-id', filename: 'plot.png' }}
+      />
+    )
+
+    const image = await screen.findByAltText('plot.png')
+    await waitFor(() => {
+      expect(image).toHaveAttribute(
+        'src',
+        'http://api.local/api/files/public/preview/image-file-id'
+      )
+    })
   })
 
   it('mounts PptxPreviewRenderer immediately with fileId without eager byte fetch', () => {
