@@ -1857,6 +1857,8 @@ class AgentServiceManager:
         task_id: Optional[str] = None,
         tracking_task_id: Optional[str] = None,
         db_session: Optional[Any] = None,
+        *,
+        manage_task_lease: bool = True,
     ) -> Dict[str, Any]:
         """
         Execute task with automatic token tracking.
@@ -1870,6 +1872,12 @@ class AgentServiceManager:
             task_id: Optional task identifier passed to agent execution
             tracking_task_id: Optional task identifier used only for token tracking
             db_session: Optional database session for token tracking
+            manage_task_lease: When False, skip acquire/release/heartbeat here.
+                ``TaskTurnOrchestrator._schedule_bg`` already owns the lease
+                lifecycle for REST/SDK turns; a nested acquire can return
+                ``running_elsewhere`` or release the row before
+                ``execute_task_background`` / ``finish_turn`` land the terminal
+                snapshot, leaving tasks stuck RUNNING for SDK clients.
 
         Returns:
             Execution result dictionary
@@ -1882,7 +1890,7 @@ class AgentServiceManager:
         lease_heartbeat_task = None
         result: Dict[str, Any] | None = None
         sandbox_task_key = None
-        if db_session and tracker_task_id:
+        if manage_task_lease and db_session and tracker_task_id:
             lease = acquire_task_lease(db_session, int(tracker_task_id))
             if lease is None:
                 return {
@@ -1909,6 +1917,8 @@ class AgentServiceManager:
             lease_heartbeat_task = asyncio.create_task(
                 run_task_lease_heartbeat(lease, lease_stop_event)
             )
+
+        if db_session and tracker_task_id:
             try:
                 from ..tracking.task_tracker import TaskTracker
 
@@ -1946,7 +1956,7 @@ class AgentServiceManager:
             return result
         finally:
             await stop_task_lease_heartbeat(lease_heartbeat_task, lease_stop_event)
-            if db_session and lease:
+            if manage_task_lease and db_session and lease:
                 if result is None:
                     final_status = TaskStatus.FAILED
                 else:

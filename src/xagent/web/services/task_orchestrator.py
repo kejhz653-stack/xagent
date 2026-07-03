@@ -418,6 +418,16 @@ def _begin_turn_atomic_sync(
                     Task.input: payload.transcript_message,
                     Task.output: None,
                     Task.error_message: None,
+                    # A new turn owns the lifecycle from this claim forward.
+                    # Stale runner_id / lease columns left by a crashed worker
+                    # or a release that failed to clear would otherwise make
+                    # acquire_task_lease deny this worker even though no live
+                    # runner is executing -- leaving the SDK row stuck RUNNING
+                    # (GET /v1/chat/tasks/{id} never reaches completed; append
+                    # returns task_busy). Reset here atomically with the claim.
+                    Task.runner_id: None,
+                    Task.lease_expires_at: None,
+                    Task.last_heartbeat_at: None,
                 },
                 synchronize_session=False,
             )
@@ -508,6 +518,37 @@ def _refuse_if_bg_inflight(task_id: int) -> None:
     existing = background_task_manager.running_tasks.get(task_id)
     if existing is not None and not existing.done():
         raise TaskTurnError("bg_inflight")
+
+
+def _retry_task_lease_acquire_after_stale_clear(task_id: int) -> Any:
+    """Best-effort second acquire after clearing an expired lease.
+
+    ``begin_turn`` resets lease columns on claim, but a narrow race or
+    legacy row can still deny the first acquire. If ``lease_expires_at``
+    is in the past, clear the stale holder and retry once on this worker.
+    """
+    from ..models.database import get_session_local
+    from .task_lease_service import acquire_task_lease, utc_now
+
+    SessionLocal = get_session_local()
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == task_id).first()
+        if task is None:
+            return None
+        expires_at = task.lease_expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at is not None and expires_at >= utc_now():
+            return None
+        if task.runner_id is not None or task.lease_expires_at is not None:
+            task.runner_id = None
+            task.lease_expires_at = None
+            task.last_heartbeat_at = utc_now()
+            db.commit()
+        return acquire_task_lease(db, task_id)
+    finally:
+        db.close()
 
 
 def _get_agent_manager() -> Any:
@@ -823,6 +864,10 @@ def _schedule_bg(
             # wraps the existing helper with its own SessionLocal so
             # the work runs on a worker thread.
             lease = await asyncio.to_thread(acquire_task_lease_isolated, task_id)
+            if lease is None:
+                lease = await asyncio.to_thread(
+                    _retry_task_lease_acquire_after_stale_clear, task_id
+                )
             if lease is None:
                 logger.info(
                     "task %s acquired by another worker; skipping "
